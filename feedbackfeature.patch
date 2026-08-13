@@ -1,0 +1,406 @@
+diff --git a/README.md b/README.md
+index 56bd842..33b359a 100644
+--- a/README.md
++++ b/README.md
+@@ -103,6 +103,52 @@ Try asking things like:
+ Each bot reply shows the predicted **intent** and **confidence score**
+ under the message bubble — useful for demonstrating the ML pipeline live.
+ 
++## Response feedback (👍 / 👎)
++
++Every bot reply that comes from a real chat turn (i.e. not the static
++welcome message) shows a 👍 **Helpful** / 👎 **Not Helpful** pair of
++buttons under it.
++
++How it works:
++
++- `POST /api/chat` now also returns a `message_id` — the row id of that
++  turn in the `chat_logs` table (`chatbot/storage.py`).
++- Clicking a button sends `POST /api/feedback` with `{"message_id": ..., "rating": "up" | "down"}`
++  via `fetch` (no page reload). `static/js/script.js` uses one delegated
++  click handler on the chat window, so it works for both freshly-sent
++  replies and history re-rendered from the database on page load.
++- Feedback is stored in a dedicated `feedback` table in `chat_history.db`,
++  alongside `chat_logs`:
++
++  ```sql
++  CREATE TABLE feedback (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      chat_log_id INTEGER NOT NULL UNIQUE REFERENCES chat_logs(id),
++      session_id TEXT NOT NULL,
++      message TEXT NOT NULL,
++      response TEXT NOT NULL,
++      intent TEXT,
++      rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
++      created_at TEXT NOT NULL
++  )
++  ```
++
++- **Duplicate prevention** happens twice: the UI disables both buttons the
++  instant one is clicked (before the request even completes), and the
++  `UNIQUE` constraint on `chat_log_id` means the database itself rejects a
++  second rating for the same turn even if the UI is bypassed — the insert
++  is silently ignored (`INSERT OR IGNORE`) and the API reports
++  `"duplicate": true` instead of erroring.
++- Reloading the page preserves rated state: `get_history()` left-joins
++  `feedback` onto `chat_logs`, so a previously-rated turn re-renders with
++  its button already marked selected/disabled.
++- Errors (network failure, bad request, DB error) never break the chat —
++  `/api/feedback` returns a JSON `error` field with an appropriate status
++  code (`400`/`404`/`500`), and the frontend re-enables the buttons with a
++  small inline "Couldn't save feedback — try again" message on failure.
++- Intent classification itself is untouched — feedback is purely additive
++  logging alongside the existing `chat_logs` table.
++
+ ## Extending the project
+ 
+ - Add more intents/patterns to `data/intents.json`, then re-run
+diff --git a/app.py b/app.py
+index 65bbc54..d3ff1dd 100644
+--- a/app.py
++++ b/app.py
+@@ -10,7 +10,7 @@ from flask import Flask, jsonify, render_template, request, session
+ 
+ from chatbot.engine import ChatEngine
+ from chatbot.preprocessing import extract_name
+-from chatbot.storage import get_history, init_db, log_message
++from chatbot.storage import get_chat_log, get_history, init_db, log_feedback, log_message
+ 
+ app = Flask(__name__)
+ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
+@@ -53,7 +53,7 @@ def chat():
+     else:
+         result = engine.get_response(message, name=session.get("student_name"))
+ 
+-    log_message(
++    message_id = log_message(
+         session_id=session["session_id"],
+         student_name=session.get("student_name"),
+         message=message,
+@@ -64,6 +64,7 @@ def chat():
+ 
+     return jsonify(
+         {
++            "message_id": message_id,
+             "response": result["response"],
+             "intent": result["intent"],
+             "confidence": result["confidence"],
+@@ -77,6 +78,39 @@ def history():
+     return jsonify(get_history(session["session_id"]))
+ 
+ 
++@app.route("/api/feedback", methods=["POST"])
++def feedback():
++    data = request.get_json(silent=True) or {}
++    rating = data.get("rating")
++    message_id = data.get("message_id")
++
++    if rating not in ("up", "down"):
++        return jsonify({"error": "rating must be 'up' or 'down'"}), 400
++
++    try:
++        message_id = int(message_id)
++    except (TypeError, ValueError):
++        return jsonify({"error": "message_id is required"}), 400
++
++    chat_log = get_chat_log(message_id, session["session_id"])
++    if chat_log is None:
++        return jsonify({"error": "message not found for this session"}), 404
++
++    try:
++        inserted = log_feedback(
++            chat_log_id=chat_log["id"],
++            session_id=session["session_id"],
++            message=chat_log["message"],
++            response=chat_log["response"],
++            intent=chat_log["intent"],
++            rating=rating,
++        )
++    except Exception:
++        return jsonify({"error": "failed to save feedback"}), 500
++
++    return jsonify({"status": "ok", "duplicate": not inserted})
++
++
+ @app.route("/api/reset", methods=["POST"])
+ def reset():
+     session["session_id"] = str(uuid.uuid4())
+diff --git a/chatbot/storage.py b/chatbot/storage.py
+index a3a7dd9..9c11c7e 100644
+--- a/chatbot/storage.py
++++ b/chatbot/storage.py
+@@ -38,12 +38,26 @@ def init_db():
+             )
+             """
+         )
++        conn.execute(
++            """
++            CREATE TABLE IF NOT EXISTS feedback (
++                id INTEGER PRIMARY KEY AUTOINCREMENT,
++                chat_log_id INTEGER NOT NULL UNIQUE REFERENCES chat_logs(id),
++                session_id TEXT NOT NULL,
++                message TEXT NOT NULL,
++                response TEXT NOT NULL,
++                intent TEXT,
++                rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
++                created_at TEXT NOT NULL
++            )
++            """
++        )
+         conn.commit()
+ 
+ 
+ def log_message(session_id, student_name, message, response, intent, confidence):
+     with get_connection() as conn:
+-        conn.execute(
++        cursor = conn.execute(
+             """
+             INSERT INTO chat_logs
+                 (session_id, student_name, message, response, intent, confidence, created_at)
+@@ -60,6 +74,7 @@ def log_message(session_id, student_name, message, response, intent, confidence)
+             ),
+         )
+         conn.commit()
++        return cursor.lastrowid
+ 
+ 
+ def get_history(session_id, limit=50):
+@@ -67,12 +82,57 @@ def get_history(session_id, limit=50):
+         conn.row_factory = sqlite3.Row
+         rows = conn.execute(
+             """
+-            SELECT message, response, intent, confidence, created_at
+-            FROM chat_logs
+-            WHERE session_id = ?
+-            ORDER BY id ASC
++            SELECT c.id, c.message, c.response, c.intent, c.confidence, c.created_at,
++                   f.rating AS feedback_rating
++            FROM chat_logs c
++            LEFT JOIN feedback f ON f.chat_log_id = c.id
++            WHERE c.session_id = ?
++            ORDER BY c.id ASC
+             LIMIT ?
+             """,
+             (session_id, limit),
+         ).fetchall()
+         return [dict(row) for row in rows]
++
++
++def get_chat_log(chat_log_id, session_id):
++    """Fetch a single logged turn, scoped to the requesting session."""
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            """
++            SELECT id, message, response, intent
++            FROM chat_logs
++            WHERE id = ? AND session_id = ?
++            """,
++            (chat_log_id, session_id),
++        ).fetchone()
++        return dict(row) if row else None
++
++
++def log_feedback(chat_log_id, session_id, message, response, intent, rating):
++    """Record a 👍/👎 rating for a chat turn.
++
++    Returns True if a new row was inserted, False if feedback for this
++    chat_log_id already existed (the UNIQUE constraint silently ignores
++    the duplicate insert instead of raising).
++    """
++    with get_connection() as conn:
++        cursor = conn.execute(
++            """
++            INSERT OR IGNORE INTO feedback
++                (chat_log_id, session_id, message, response, intent, rating, created_at)
++            VALUES (?, ?, ?, ?, ?, ?, ?)
++            """,
++            (
++                chat_log_id,
++                session_id,
++                message,
++                response,
++                intent,
++                rating,
++                datetime.utcnow().isoformat(),
++            ),
++        )
++        conn.commit()
++        return cursor.rowcount > 0
+diff --git a/static/css/style.css b/static/css/style.css
+index dbf7810..0df7599 100644
+--- a/static/css/style.css
++++ b/static/css/style.css
+@@ -196,3 +196,49 @@ body {
+   font-style: italic;
+   color: var(--text-dim);
+ }
++
++.feedback {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  margin-top: 4px;
++  padding: 0 4px;
++}
++
++.feedback-btn {
++  background: var(--panel-light);
++  border: 1px solid transparent;
++  border-radius: 999px;
++  padding: 2px 8px;
++  font-size: 13px;
++  line-height: 1.6;
++  cursor: pointer;
++  opacity: 0.75;
++  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
++}
++
++.feedback-btn:hover:not(:disabled) {
++  opacity: 1;
++  background: var(--panel-light);
++  border-color: var(--accent-light);
++}
++
++.feedback-btn.selected {
++  opacity: 1;
++  border-color: var(--accent-light);
++  background: var(--accent);
++}
++
++.feedback-btn:disabled {
++  cursor: default;
++}
++
++.feedback-thanks {
++  font-size: 11px;
++  color: var(--text-dim);
++}
++
++.feedback-error {
++  font-size: 11px;
++  color: #f87171;
++}
+diff --git a/static/js/script.js b/static/js/script.js
+index adc2b4b..05feeb8 100644
+--- a/static/js/script.js
++++ b/static/js/script.js
+@@ -8,7 +8,32 @@ function scrollToBottom() {
+   chatWindow.scrollTop = chatWindow.scrollHeight;
+ }
+ 
+-function appendMessage(text, sender, meta) {
++function createFeedbackElement(messageId, existingRating) {
++  const container = document.createElement("div");
++  container.className = "feedback";
++  container.dataset.messageId = messageId;
++
++  ["up", "down"].forEach((rating) => {
++    const btn = document.createElement("button");
++    btn.type = "button";
++    btn.className = `feedback-btn feedback-${rating}` + (existingRating === rating ? " selected" : "");
++    btn.dataset.rating = rating;
++    btn.setAttribute("aria-label", rating === "up" ? "Helpful" : "Not helpful");
++    btn.textContent = rating === "up" ? "👍" : "👎";
++    btn.disabled = Boolean(existingRating);
++    container.appendChild(btn);
++  });
++
++  const thanks = document.createElement("span");
++  thanks.className = "feedback-thanks";
++  thanks.textContent = "Thanks for your feedback!";
++  thanks.hidden = !existingRating;
++  container.appendChild(thanks);
++
++  return container;
++}
++
++function appendMessage(text, sender, meta, messageId) {
+   const wrapper = document.createElement("div");
+   wrapper.className = `message ${sender}`;
+ 
+@@ -24,11 +49,58 @@ function appendMessage(text, sender, meta) {
+     wrapper.appendChild(metaEl);
+   }
+ 
++  if (sender === "bot" && messageId != null) {
++    wrapper.appendChild(createFeedbackElement(messageId, null));
++  }
++
+   chatWindow.appendChild(wrapper);
+   scrollToBottom();
+   return wrapper;
+ }
+ 
++async function submitFeedback(container, rating) {
++  const messageId = Number(container.dataset.messageId);
++  const buttons = container.querySelectorAll(".feedback-btn");
++  const thanks = container.querySelector(".feedback-thanks");
++
++  buttons.forEach((btn) => (btn.disabled = true));
++
++  try {
++    const res = await fetch("/api/feedback", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ message_id: messageId, rating }),
++    });
++    const data = await res.json();
++
++    if (!res.ok || data.error) {
++      throw new Error(data.error || "request failed");
++    }
++
++    buttons.forEach((btn) => {
++      btn.classList.toggle("selected", btn.dataset.rating === rating);
++    });
++    thanks.hidden = false;
++  } catch (err) {
++    buttons.forEach((btn) => (btn.disabled = false));
++    let errorEl = container.querySelector(".feedback-error");
++    if (!errorEl) {
++      errorEl = document.createElement("span");
++      errorEl.className = "feedback-error";
++      container.appendChild(errorEl);
++    }
++    errorEl.textContent = "Couldn't save feedback — try again.";
++  }
++}
++
++chatWindow.addEventListener("click", (e) => {
++  const btn = e.target.closest(".feedback-btn");
++  if (!btn || btn.disabled) return;
++  const container = btn.closest(".feedback");
++  if (!container) return;
++  submitFeedback(container, btn.dataset.rating);
++});
++
+ function appendTyping() {
+   const wrapper = document.createElement("div");
+   wrapper.className = "message bot typing";
+@@ -59,7 +131,8 @@ async function sendMessage(text) {
+     appendMessage(
+       data.response,
+       "bot",
+-      `intent: ${data.intent} · confidence: ${data.confidence.toFixed(2)}`
++      `intent: ${data.intent} · confidence: ${data.confidence.toFixed(2)}`,
++      data.message_id
+     );
+   } catch (err) {
+     typingEl.remove();
+diff --git a/templates/index.html b/templates/index.html
+index 468eb6e..117a651 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -36,6 +36,11 @@
+       <div class="message bot">
+         <div class="bubble">{{ turn.response }}</div>
+         <div class="meta">intent: {{ turn.intent }} · confidence: {{ "%.2f"|format(turn.confidence) }}</div>
++        <div class="feedback" data-message-id="{{ turn.id }}">
++          <button type="button" class="feedback-btn feedback-up{{ ' selected' if turn.feedback_rating == 'up' else '' }}" data-rating="up" aria-label="Helpful" {{ 'disabled' if turn.feedback_rating }}>👍</button>
++          <button type="button" class="feedback-btn feedback-down{{ ' selected' if turn.feedback_rating == 'down' else '' }}" data-rating="down" aria-label="Not helpful" {{ 'disabled' if turn.feedback_rating }}>👎</button>
++          <span class="feedback-thanks" {{ '' if turn.feedback_rating else 'hidden' }}>Thanks for your feedback!</span>
++        </div>
+       </div>
+       {% endfor %}
+     </main>
