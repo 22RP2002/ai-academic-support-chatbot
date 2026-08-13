@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Academic Support Chatbot</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-icon">🎓</span>
+        <div>
+          <h1>Academic Support Chatbot</h1>
+          <p>Ask about courses, exams, assignments, attendance, or study tips</p>
+        </div>
+      </div>
+      <button id="reset-btn" class="reset-btn" title="Start a new conversation">New chat</button>
+    </header>
+
+    <main class="chat-window" id="chat-window">
+      {% if not history %}
+      <div class="message bot">
+        <div class="bubble">
+          Hi{{ ' ' + student_name if student_name else '' }}! I'm your academic support
+          assistant. Try asking me about exam schedules, assignment deadlines,
+          attendance policy, or study tips.
+        </div>
+      </div>
+      {% endif %}
+      {% for turn in history %}
+      <div class="message user">
+        <div class="bubble">{{ turn.message }}</div>
+      </div>
+      <div class="message bot">
+        <div class="bubble">{{ turn.response }}</div>
+        <div class="meta">intent: {{ turn.intent }} · confidence: {{ "%.2f"|format(turn.confidence) }}</div>
+      </div>
+      {% endfor %}
+    </main>
+
+    <div class="suggestions" id="suggestions">
+      <button class="chip">Exam schedule</button>
+      <button class="chip">Study tips</button>
+      <button class="chip">Attendance policy</button>
+      <button class="chip">Assignment help</button>
+    </div>
+
+    <form id="chat-form" class="chat-form">
+      <input
+        id="message-input"
+        type="text"
+        autocomplete="off"
+        placeholder="Type your question here..."
+        required
+      />
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

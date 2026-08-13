@@ -1,0 +1,333 @@
+{
+  "intents": [
+    {
+      "tag": "greeting",
+      "patterns": [
+        "Hi", "Hello", "Hey", "Good morning", "Good afternoon", "Good evening",
+        "Hi there", "Hey bot", "Is anyone there?", "Yo", "Hiya", "What's up", "Sup"
+      ],
+      "responses": [
+        "Hello{name}! I'm your academic support assistant. How can I help you today?",
+        "Hi{name}! Ready to help with your studies. What do you need?",
+        "Hey{name}! Ask me about your courses, exams, assignments, or study tips."
+      ]
+    },
+    {
+      "tag": "goodbye",
+      "patterns": [
+        "Bye", "Goodbye", "See you later", "See you", "I'm leaving", "Talk to you later",
+        "Have to go", "Catch you later", "Exit", "Quit", "Cya", "Gtg", "Later"
+      ],
+      "responses": [
+        "Goodbye{name}! Good luck with your studies.",
+        "See you soon{name}! Don't forget to review your notes.",
+        "Bye{name}! Come back anytime you need academic help."
+      ]
+    },
+    {
+      "tag": "thanks",
+      "patterns": [
+        "Thanks", "Thank you", "That's helpful", "Thanks a lot", "Thank you so much",
+        "Appreciate it", "Thanks for the help", "Great, thanks", "Thx", "Ty"
+      ],
+      "responses": [
+        "You're welcome{name}! Happy to help.",
+        "Anytime{name}! Let me know if you have more questions.",
+        "Glad I could help{name}!"
+      ]
+    },
+    {
+      "tag": "bot_identity",
+      "patterns": [
+        "Who are you", "What are you", "Tell me about yourself", "What is your name",
+        "Are you a bot", "Are you human", "What is this"
+      ],
+      "responses": [
+        "I'm an AI Academic Support Chatbot built with Flask, NLTK, and Scikit-learn. I help students with course info, exams, assignments, and study guidance.",
+        "I'm your virtual academic assistant, designed to answer common student queries instantly."
+      ]
+    },
+    {
+      "tag": "capabilities",
+      "patterns": [
+        "What can you do", "How can you help me", "What do you know", "Help",
+        "What can you help with", "List your features", "What kind of questions can I ask"
+      ],
+      "responses": [
+        "I can help with: course & syllabus info, exam schedules, assignment deadlines, attendance policy, grading, library info, study tips, time management, stress management, scholarships, fees, hostel info, placements, and faculty contacts.",
+        "Ask me about exams, assignments, attendance, grades, study tips, or campus facilities and I'll do my best to help{name}!"
+      ]
+    },
+    {
+      "tag": "course_info",
+      "patterns": [
+        "Tell me about the course", "What subjects are in this semester", "Course details",
+        "What is the syllabus for this course", "Which subjects do I have", "Course structure",
+        "What topics are covered in this course", "Give me course information"
+      ],
+      "responses": [
+        "You can find detailed course structure and subject list in the student portal under 'Academics > Course Details'.",
+        "Course details including credits and subjects are listed on the department notice board and student portal."
+      ]
+    },
+    {
+      "tag": "syllabus",
+      "patterns": [
+        "Where can I find the syllabus", "Send me the syllabus", "Syllabus for this semester",
+        "What is in the syllabus", "Show syllabus", "Unit wise syllabus"
+      ],
+      "responses": [
+        "The syllabus is available on the college portal under 'Academics > Syllabus', unit-wise for every subject.",
+        "You can download the latest syllabus PDF from the department website or student portal."
+      ]
+    },
+    {
+      "tag": "timetable",
+      "patterns": [
+        "What is today's timetable", "Class schedule", "When is my next class",
+        "Show me the timetable", "What time does class start", "Lecture schedule",
+        "What classes do I have today"
+      ],
+      "responses": [
+        "Your class timetable is available on the student portal under 'Timetable'. Make sure to check for any last-minute changes.",
+        "Check the notice board or portal for the latest timetable — it updates every semester."
+      ]
+    },
+    {
+      "tag": "exam_schedule",
+      "patterns": [
+        "When are the exams", "Exam schedule", "Exam date sheet", "When is my next exam",
+        "Tell me the exam timetable", "Final exam dates", "Mid semester exam schedule",
+        "When does the exam start"
+      ],
+      "responses": [
+        "The exam datesheet is usually released 2-3 weeks before exams on the student portal under 'Examinations'.",
+        "Please check the examination section of the portal for the latest exam schedule."
+      ]
+    },
+    {
+      "tag": "exam_tips",
+      "patterns": [
+        "How do I prepare for exams", "Exam preparation tips", "How to study for exams",
+        "Tips for scoring good marks", "How to revise before exam", "Last minute exam tips",
+        "How do I manage exam stress", "Where can I get previous year question papers",
+        "Do you have sample papers", "Previous year papers"
+      ],
+      "responses": [
+        "Try the Pomodoro technique: 25 minutes focused study + 5 minute break. Also, solve previous years' papers and make short revision notes.",
+        "Prioritize high-weightage topics, practice past papers, sleep well before the exam, and avoid cramming the night before.",
+        "Create a revision timetable, focus on weak topics first, and take short breaks to keep your mind fresh."
+      ]
+    },
+    {
+      "tag": "assignment_help",
+      "patterns": [
+        "I need help with my assignment", "How do I submit my assignment",
+        "Assignment format", "Help with assignment", "How to write an assignment",
+        "Assignment guidelines", "Where do I upload my assignment"
+      ],
+      "responses": [
+        "Assignments should be submitted via the LMS portal in PDF format. Check the assignment brief for word count and referencing style.",
+        "Structure your assignment with an introduction, body, and conclusion. Cite your sources properly, and submit before the deadline via the portal."
+      ]
+    },
+    {
+      "tag": "assignment_deadline",
+      "patterns": [
+        "When is the assignment due", "Assignment deadline", "Last date to submit assignment",
+        "Is there an extension for the assignment", "When do I need to submit my project"
+      ],
+      "responses": [
+        "Deadlines are posted on the LMS along with each assignment. Late submissions may attract a penalty unless an extension is approved.",
+        "Check the assignment tab on the portal for the exact due date and time."
+      ]
+    },
+    {
+      "tag": "attendance_policy",
+      "patterns": [
+        "What is the attendance policy", "Minimum attendance required", "How much attendance do I need",
+        "What happens if my attendance is low", "Attendance rules", "Am I eligible for exams with low attendance"
+      ],
+      "responses": [
+        "Most programs require a minimum of 75% attendance to be eligible for exams. Check with your department for exact rules.",
+        "If your attendance falls below the required percentage, you may need to apply for condonation through your department."
+      ]
+    },
+    {
+      "tag": "grading_system",
+      "patterns": [
+        "How is grading done", "What is the grading system", "How are marks calculated",
+        "What is CGPA", "How do I calculate my GPA", "Grading scale"
+      ],
+      "responses": [
+        "Grading is typically done on a 10-point CGPA scale, combining internal assessments and end-semester exam marks.",
+        "Your final grade usually combines internal marks (assignments, attendance, tests) and external exam marks. Check your institution's grading policy for exact weightage."
+      ]
+    },
+    {
+      "tag": "results",
+      "patterns": [
+        "When will results be declared", "How do I check my results", "Result date",
+        "Where can I see my marks", "Semester results"
+      ],
+      "responses": [
+        "Results are usually published on the student portal within 3-4 weeks after exams end.",
+        "You can check your results by logging into the student portal under 'Examinations > Results'."
+      ]
+    },
+    {
+      "tag": "library_info",
+      "patterns": [
+        "What are the library timings", "Library hours", "How do I borrow a book",
+        "Where is the library", "Do you have e-books", "Library rules"
+      ],
+      "responses": [
+        "The library is usually open from 9 AM to 8 PM on weekdays. You can borrow up to 3 books at a time with your student ID.",
+        "Many institutions provide access to e-books and journals through the library's digital portal — check with your librarian for login details."
+      ]
+    },
+    {
+      "tag": "study_tips",
+      "patterns": [
+        "Give me some study tips", "How can I study better", "Best way to study",
+        "How to concentrate while studying", "How do I improve my focus", "Study techniques"
+      ],
+      "responses": [
+        "Try active recall and spaced repetition — test yourself instead of just re-reading notes. Study in short, focused sessions.",
+        "Remove distractions, set clear goals for each session, and use techniques like summarizing topics in your own words.",
+        "Break large topics into small chunks, use flashcards for quick revision, and teach concepts to a friend to reinforce learning."
+      ]
+    },
+    {
+      "tag": "time_management",
+      "patterns": [
+        "How do I manage my time", "Time management tips", "How to balance studies and other activities",
+        "I have too much to study and no time", "How to make a study schedule"
+      ],
+      "responses": [
+        "Use a weekly planner, prioritize tasks using the Eisenhower matrix (urgent vs important), and avoid multitasking.",
+        "Break your day into blocks for study, breaks, and personal time. Review and adjust your schedule weekly."
+      ]
+    },
+    {
+      "tag": "stress_management",
+      "patterns": [
+        "I am stressed about exams", "How do I deal with academic stress", "I feel overwhelmed with studies",
+        "I am anxious about my results", "How to reduce study stress"
+      ],
+      "responses": [
+        "It's normal to feel stressed. Try deep breathing, short walks, and breaking tasks into smaller steps. Don't hesitate to talk to a counselor if it gets overwhelming.",
+        "Take regular breaks, get enough sleep, and remember that one exam doesn't define you. You've got this{name}!"
+      ]
+    },
+    {
+      "tag": "motivation",
+      "patterns": [
+        "I need motivation to study", "I don't feel like studying", "Motivate me",
+        "I feel lazy to study", "Give me a motivational quote", "Cheer me up", "Encourage me"
+      ],
+      "responses": [
+        "\"Success is the sum of small efforts repeated day in and day out.\" Keep going{name}, you're closer than you think!",
+        "Every expert was once a beginner. Start with just 10 minutes of focused study — momentum will carry you forward.",
+        "\"The future depends on what you do today.\" – Mahatma Gandhi. You've got this{name}!"
+      ]
+    },
+    {
+      "tag": "scholarship_info",
+      "patterns": [
+        "Are there any scholarships available", "How do I apply for a scholarship",
+        "Scholarship eligibility", "Financial aid information"
+      ],
+      "responses": [
+        "Scholarship details are usually listed on the college website under 'Financial Aid' or 'Scholarships'. Eligibility often depends on merit or income criteria.",
+        "Check with the accounts/scholarship office for merit-based and government scholarship schemes you may be eligible for."
+      ]
+    },
+    {
+      "tag": "fee_payment",
+      "patterns": [
+        "How do I pay my fees", "Fee payment deadline", "Where can I pay college fees",
+        "What is the fee structure", "Is there a late fee for payment"
+      ],
+      "responses": [
+        "Fees can usually be paid online through the student portal via net banking, UPI, or card. Check the accounts office for the exact deadline.",
+        "Late fee payments may attract a penalty — check the fee schedule on the portal for exact due dates."
+      ]
+    },
+    {
+      "tag": "hostel_info",
+      "patterns": [
+        "How do I apply for hostel", "Hostel fees", "Hostel rules", "Is hostel accommodation available"
+      ],
+      "responses": [
+        "Hostel applications are usually done through the student portal or the hostel warden's office at the start of the academic year.",
+        "Contact the hostel administration office for information on fees, room allotment, and rules."
+      ]
+    },
+    {
+      "tag": "placement_info",
+      "patterns": [
+        "Tell me about placements", "When do placements start", "Which companies visit for placements",
+        "How do I prepare for placements", "Placement cell contact"
+      ],
+      "responses": [
+        "The placement cell usually begins drives in the final year. Check their notice board or portal for company visits and eligibility criteria.",
+        "Build your resume, practice aptitude tests and mock interviews, and stay updated through the placement cell's announcements."
+      ]
+    },
+    {
+      "tag": "faculty_contact",
+      "patterns": [
+        "How do I contact my professor", "Faculty email", "Who is my class coordinator",
+        "How do I reach my teacher", "Faculty office hours", "I want to talk to a professor",
+        "How do I meet my teacher"
+      ],
+      "responses": [
+        "Faculty contact details and office hours are usually listed on the department website or notice board.",
+        "You can email your professor directly or visit during their listed office hours — check the department portal for details."
+      ]
+    },
+    {
+      "tag": "technical_support",
+      "patterns": [
+        "I can't log into the portal", "Forgot my password", "The website is not working",
+        "I am having a technical issue", "LMS is not loading"
+      ],
+      "responses": [
+        "Try resetting your password using the 'Forgot Password' link. If the issue persists, contact the IT helpdesk.",
+        "Clear your browser cache or try a different browser. If the problem continues, reach out to your college's IT support team."
+      ]
+    },
+    {
+      "tag": "feedback",
+      "patterns": [
+        "I want to give feedback", "How do I submit feedback", "This chatbot is helpful",
+        "This chatbot is not helpful", "I have a suggestion"
+      ],
+      "responses": [
+        "Thank you for your feedback{name}! It helps us improve this academic support system.",
+        "We appreciate your input{name} — feel free to share more suggestions anytime."
+      ]
+    },
+    {
+      "tag": "joke",
+      "patterns": [
+        "Tell me a joke", "Make me laugh", "Say something funny", "Do you know any jokes"
+      ],
+      "responses": [
+        "Why did the student eat his homework? Because the teacher said it was a piece of cake!",
+        "Why was the math book sad? Because it had too many problems.",
+        "I would tell you a chemistry joke, but I know I wouldn't get a reaction."
+      ]
+    },
+    {
+      "tag": "noanswer",
+      "patterns": [],
+      "responses": [
+        "I'm not sure I understand{name}. Could you rephrase that, or ask about courses, exams, assignments, attendance, or study tips?",
+        "Sorry{name}, I don't have an answer for that yet. Try asking about exams, assignments, timetable, or study tips.",
+        "Hmm, I couldn't quite get that. You can ask me about academics, exams, library, or student life."
+      ]
+    }
+  ]
+}
