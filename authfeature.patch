@@ -1,0 +1,1088 @@
+diff --git a/app.py b/app.py
+index aad7966..17a130d 100644
+--- a/app.py
++++ b/app.py
+@@ -4,23 +4,31 @@ Serves the chat UI and a small JSON API backed by a Scikit-learn /
+ NLTK intent-classification chatbot engine (see chatbot/engine.py).
+ """
+ import os
++import re
+ import uuid
+ from datetime import timedelta
++from functools import wraps
+ 
+-from flask import Flask, abort, jsonify, render_template, request, session
++from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session, url_for
++from werkzeug.security import check_password_hash
+ 
+ from chatbot.engine import ChatEngine
+ from chatbot.preprocessing import extract_name
+ from chatbot.storage import (
++    DuplicateUserError,
+     create_conversation,
++    create_user,
+     delete_conversation,
+     generate_title,
+-    get_chat_log,
++    get_chat_log_for_user,
+     get_conversation,
+     get_conversation_by_share_id,
+     get_conversation_messages,
+     get_history,
+     get_share_messages,
++    get_user_by_email,
++    get_user_by_id,
++    get_user_by_username,
+     init_db,
+     list_conversations,
+     log_feedback,
+@@ -29,6 +37,9 @@ from chatbot.storage import (
+     touch_conversation,
+ )
+ 
++EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
++USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,30}$")
++
+ app = Flask(__name__)
+ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
+ # Sidebar history relies on session_id as a durable per-browser identity, so
+@@ -49,32 +60,137 @@ def ensure_session():
+     session.setdefault("conversation_id", None)
+ 
+ 
++def login_required_page(view):
++    """For HTML routes: redirect anonymous visitors to the login page."""
++    @wraps(view)
++    def wrapped(*args, **kwargs):
++        if not session.get("user_id"):
++            return redirect(url_for("login_page", next=request.path))
++        return view(*args, **kwargs)
++    return wrapped
++
++
++def login_required_api(view):
++    """For JSON API routes: a redirect is useless to fetch(), so return 401."""
++    @wraps(view)
++    def wrapped(*args, **kwargs):
++        if not session.get("user_id"):
++            return jsonify({"error": "authentication required"}), 401
++        return view(*args, **kwargs)
++    return wrapped
++
++
++@app.route("/signup", methods=["GET", "POST"])
++def signup_page():
++    if session.get("user_id"):
++        return redirect(url_for("index"))
++
++    if request.method == "GET":
++        return render_template("signup.html")
++
++    username = (request.form.get("username") or "").strip().lower()
++    email = (request.form.get("email") or "").strip().lower()
++    password = request.form.get("password") or ""
++    confirm_password = request.form.get("confirm_password") or ""
++    form_values = {"username": username, "email": email}
++
++    if not USERNAME_RE.match(username):
++        flash("Username must be 3-30 characters: letters, numbers, or underscore.", "error")
++        return render_template("signup.html", **form_values), 400
++    if not EMAIL_RE.match(email):
++        flash("Enter a valid email address.", "error")
++        return render_template("signup.html", **form_values), 400
++    if len(password) < 8:
++        flash("Password must be at least 8 characters.", "error")
++        return render_template("signup.html", **form_values), 400
++    if password != confirm_password:
++        flash("Passwords do not match.", "error")
++        return render_template("signup.html", **form_values), 400
++    if get_user_by_username(username):
++        flash("That username is already taken.", "error")
++        return render_template("signup.html", **form_values), 400
++    if get_user_by_email(email):
++        flash("An account with that email already exists.", "error")
++        return render_template("signup.html", **form_values), 400
++
++    try:
++        user = create_user(username, email, password)
++    except DuplicateUserError:
++        flash("That username or email is already in use.", "error")
++        return render_template("signup.html", **form_values), 400
++
++    session.clear()
++    session["user_id"] = user["id"]
++    flash(f"Welcome, {user['username']}! Your account was created.", "success")
++    return redirect(url_for("index"))
++
++
++@app.route("/login", methods=["GET", "POST"])
++def login_page():
++    if session.get("user_id"):
++        return redirect(url_for("index"))
++
++    if request.method == "GET":
++        return render_template("login.html", next=request.args.get("next", ""))
++
++    email = (request.form.get("email") or "").strip().lower()
++    password = request.form.get("password") or ""
++    next_url = request.form.get("next") or ""
++
++    user = get_user_by_email(email)
++    if user is None or not check_password_hash(user["password_hash"], password):
++        flash("Invalid email or password.", "error")
++        return render_template("login.html", email=email, next=next_url), 401
++
++    session.clear()
++    session["user_id"] = user["id"]
++    flash(f"Welcome back, {user['username']}!", "success")
++    return redirect(next_url if next_url.startswith("/") else url_for("index"))
++
++
++@app.route("/logout", methods=["POST"])
++def logout_page():
++    session.clear()
++    flash("You have been logged out.", "success")
++    return redirect(url_for("login_page"))
++
++
++@app.route("/profile")
++@login_required_page
++def profile_page():
++    user = get_user_by_id(session["user_id"])
++    return render_template("profile.html", user=user)
++
++
+ @app.route("/")
++@login_required_page
+ def index():
+     conversation_id = session.get("conversation_id")
+     current_conversation = None
+     history = []
+ 
+     if conversation_id:
+-        current_conversation = get_conversation(conversation_id, session["session_id"])
++        current_conversation = get_conversation(conversation_id, session["user_id"])
+         if current_conversation is None:
+             # Conversation was deleted (or belongs to a stale cookie) — fall
+             # back to a fresh, empty chat instead of erroring.
+             session["conversation_id"] = None
+         else:
+-            history = get_conversation_messages(conversation_id, session["session_id"])
++            history = get_conversation_messages(conversation_id, session["user_id"])
+ 
+     return render_template(
+         "index.html",
+         history=history,
+         student_name=session.get("student_name"),
+-        conversations=list_conversations(session["session_id"]),
++        current_user=get_user_by_id(session["user_id"]),
++        conversations=list_conversations(session["user_id"]),
+         current_conversation_id=session.get("conversation_id"),
+         current_conversation=current_conversation,
+     )
+ 
+ 
+ @app.route("/api/chat", methods=["POST"])
++@login_required_api
+ def chat():
+     data = request.get_json(silent=True) or {}
+     message = (data.get("message") or "").strip()
+@@ -96,7 +212,9 @@ def chat():
+     conversation_id = session.get("conversation_id")
+     is_new_conversation = conversation_id is None
+     if is_new_conversation:
+-        conversation_id = create_conversation(session["session_id"], generate_title(message))
++        conversation_id = create_conversation(
++            session["user_id"], session["session_id"], generate_title(message)
++        )
+         session["conversation_id"] = conversation_id
+     else:
+         touch_conversation(conversation_id)
+@@ -125,11 +243,13 @@ def chat():
+ 
+ 
+ @app.route("/api/history")
++@login_required_api
+ def history():
+     return jsonify(get_history(session["session_id"]))
+ 
+ 
+ @app.route("/api/feedback", methods=["POST"])
++@login_required_api
+ def feedback():
+     data = request.get_json(silent=True) or {}
+     rating = data.get("rating")
+@@ -143,9 +263,9 @@ def feedback():
+     except (TypeError, ValueError):
+         return jsonify({"error": "message_id is required"}), 400
+ 
+-    chat_log = get_chat_log(message_id, session["session_id"])
++    chat_log = get_chat_log_for_user(message_id, session["user_id"])
+     if chat_log is None:
+-        return jsonify({"error": "message not found for this session"}), 404
++        return jsonify({"error": "message not found for this account"}), 404
+ 
+     try:
+         inserted = log_feedback(
+@@ -163,12 +283,11 @@ def feedback():
+ 
+ 
+ @app.route("/api/reset", methods=["POST"])
++@login_required_api
+ def reset():
+     """Start a new chat: clears the *active* conversation pointer only.
+ 
+-    session_id (the durable per-browser identity) is intentionally never
+-    rotated here — doing so would orphan all of this browser's existing
+-    conversations from the sidebar. Nothing is deleted.
++    Nothing is deleted, and the user stays logged in.
+     """
+     session["conversation_id"] = None
+     session["student_name"] = None
+@@ -176,24 +295,27 @@ def reset():
+ 
+ 
+ @app.route("/api/conversations")
++@login_required_api
+ def conversations():
+-    return jsonify(list_conversations(session["session_id"]))
++    return jsonify(list_conversations(session["user_id"]))
+ 
+ 
+ @app.route("/api/conversations/<conversation_id>")
++@login_required_api
+ def conversation_detail(conversation_id):
+-    conversation = get_conversation(conversation_id, session["session_id"])
++    conversation = get_conversation(conversation_id, session["user_id"])
+     if conversation is None:
+         return jsonify({"error": "conversation not found"}), 404
+ 
+     session["conversation_id"] = conversation_id
+-    messages = get_conversation_messages(conversation_id, session["session_id"])
++    messages = get_conversation_messages(conversation_id, session["user_id"])
+     return jsonify({"conversation": conversation, "messages": messages})
+ 
+ 
+ @app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
++@login_required_api
+ def conversation_delete(conversation_id):
+-    deleted = delete_conversation(conversation_id, session["session_id"])
++    deleted = delete_conversation(conversation_id, session["user_id"])
+     if not deleted:
+         return jsonify({"error": "conversation not found"}), 404
+ 
+@@ -204,8 +326,9 @@ def conversation_delete(conversation_id):
+ 
+ 
+ @app.route("/api/conversations/<conversation_id>/share", methods=["POST"])
++@login_required_api
+ def conversation_share(conversation_id):
+-    share_id = set_conversation_share(conversation_id, session["session_id"])
++    share_id = set_conversation_share(conversation_id, session["user_id"])
+     if share_id is None:
+         return jsonify({"error": "conversation not found"}), 404
+ 
+diff --git a/chatbot/storage.py b/chatbot/storage.py
+index 6231980..96a8fc6 100644
+--- a/chatbot/storage.py
++++ b/chatbot/storage.py
+@@ -1,13 +1,19 @@
+ """SQLite-backed chat history storage.
+ 
+-Keeps a record of every exchange (per browser session) so the demo can
+-show conversation history / a simple "personalised support" trail —
+-without requiring a full user auth system.
++Keeps a record of every exchange so the app can show conversation
++history / a simple "personalised support" trail, plus real user accounts.
+ 
+ Messages are grouped into named "conversations" (a ChatGPT-style sidebar
+-concept). session_id remains the durable per-browser identity; a
+-conversation just groups a subset of that session's chat_logs rows under
+-a title, so the sidebar can list/switch/delete threads independently.
++concept), each owned by a user (conversations.user_id). Ownership of
++chat_logs/feedback rows is derived by joining through their conversation
++rather than duplicating user_id onto every table — the minimum schema
++needed for per-user access control.
++
++Schema notes for an eventual SQLite -> PostgreSQL move: ids are plain
++TEXT (uuid4 hex / url-safe tokens), all queries use parameterized SQL, and
++no SQLite-only column types/extensions are used. The one SQLite-specific
++piece is the migration's `PRAGMA table_info` column check in init_db();
++Postgres would use `information_schema.columns` there instead.
+ """
+ import os
+ import secrets
+@@ -16,12 +22,18 @@ import uuid
+ from contextlib import contextmanager
+ from datetime import datetime
+ 
++from werkzeug.security import generate_password_hash
++
+ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ DB_PATH = os.path.join(BASE_DIR, "chat_history.db")
+ 
+ TITLE_MAX_LEN = 40
+ 
+ 
++class DuplicateUserError(Exception):
++    """Raised when a signup would violate the users table's UNIQUE constraints."""
++
++
+ @contextmanager
+ def get_connection():
+     conn = sqlite3.connect(DB_PATH)
+@@ -33,6 +45,17 @@ def get_connection():
+ 
+ def init_db():
+     with get_connection() as conn:
++        conn.execute(
++            """
++            CREATE TABLE IF NOT EXISTS users (
++                id TEXT PRIMARY KEY,
++                username TEXT NOT NULL UNIQUE,
++                email TEXT NOT NULL UNIQUE,
++                password_hash TEXT NOT NULL,
++                created_at TEXT NOT NULL
++            )
++            """
++        )
+         conn.execute(
+             """
+             CREATE TABLE IF NOT EXISTS chat_logs (
+@@ -77,15 +100,26 @@ def init_db():
+         # Non-destructive migration: older databases (pre-sidebar feature)
+         # have chat_logs without conversation_id. Existing rows simply stay
+         # unattached to any conversation (they predate the concept).
+-        existing_columns = {
++        chat_log_columns = {
+             row[1] for row in conn.execute("PRAGMA table_info(chat_logs)")
+         }
+-        if "conversation_id" not in existing_columns:
++        if "conversation_id" not in chat_log_columns:
+             conn.execute(
+                 "ALTER TABLE chat_logs ADD COLUMN conversation_id TEXT "
+                 "REFERENCES conversations(id)"
+             )
+ 
++        # Non-destructive migration: older databases (pre-auth feature) have
++        # conversations without user_id. Existing (anonymous) conversations
++        # simply become inaccessible to any account — not deleted.
++        conversation_columns = {
++            row[1] for row in conn.execute("PRAGMA table_info(conversations)")
++        }
++        if "user_id" not in conversation_columns:
++            conn.execute(
++                "ALTER TABLE conversations ADD COLUMN user_id TEXT REFERENCES users(id)"
++            )
++
+         conn.commit()
+ 
+ 
+@@ -130,17 +164,20 @@ def get_history(session_id, limit=50):
+         return [dict(row) for row in rows]
+ 
+ 
+-def get_chat_log(chat_log_id, session_id):
+-    """Fetch a single logged turn, scoped to the requesting session."""
++def get_chat_log_for_user(chat_log_id, user_id):
++    """Fetch a single logged turn, scoped to the requesting user via its
++    conversation's ownership (chat_logs itself carries no user_id — the
++    minimum schema needed is the one on conversations)."""
+     with get_connection() as conn:
+         conn.row_factory = sqlite3.Row
+         row = conn.execute(
+             """
+-            SELECT id, message, response, intent
+-            FROM chat_logs
+-            WHERE id = ? AND session_id = ?
++            SELECT c.id, c.message, c.response, c.intent
++            FROM chat_logs c
++            JOIN conversations conv ON conv.id = c.conversation_id
++            WHERE c.id = ? AND conv.user_id = ?
+             """,
+-            (chat_log_id, session_id),
++            (chat_log_id, user_id),
+         ).fetchone()
+         return dict(row) if row else None
+ 
+@@ -173,6 +210,62 @@ def log_feedback(chat_log_id, session_id, message, response, intent, rating):
+         return cursor.rowcount > 0
+ 
+ 
++def create_user(username, email, password):
++    """Create a new account with a securely hashed password.
++
++    Raises DuplicateUserError if the username or email is already taken
++    (also guards the race between the pre-check in app.py and this insert).
++    """
++    user_id = uuid.uuid4().hex
++    now = datetime.utcnow().isoformat()
++    password_hash = generate_password_hash(password)
++    with get_connection() as conn:
++        try:
++            conn.execute(
++                """
++                INSERT INTO users (id, username, email, password_hash, created_at)
++                VALUES (?, ?, ?, ?, ?)
++                """,
++                (user_id, username, email, password_hash, now),
++            )
++            conn.commit()
++        except sqlite3.IntegrityError as exc:
++            raise DuplicateUserError("username or email already in use") from exc
++    return {"id": user_id, "username": username, "email": email, "created_at": now}
++
++
++def get_user_by_email(email):
++    """Returns the full row (including password_hash) for login verification."""
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            "SELECT id, username, email, password_hash, created_at FROM users WHERE email = ?",
++            (email,),
++        ).fetchone()
++        return dict(row) if row else None
++
++
++def get_user_by_username(username):
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            "SELECT id, username, email, created_at FROM users WHERE username = ?",
++            (username,),
++        ).fetchone()
++        return dict(row) if row else None
++
++
++def get_user_by_id(user_id):
++    """Public profile fields only — never returns password_hash."""
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            "SELECT id, username, email, created_at FROM users WHERE id = ?",
++            (user_id,),
++        ).fetchone()
++        return dict(row) if row else None
++
++
+ def generate_title(message):
+     """Derive a short sidebar title from the first message of a conversation."""
+     title = " ".join((message or "").split())
+@@ -183,16 +276,16 @@ def generate_title(message):
+     return title[0].upper() + title[1:]
+ 
+ 
+-def create_conversation(session_id, title):
++def create_conversation(user_id, session_id, title):
+     conversation_id = uuid.uuid4().hex
+     now = datetime.utcnow().isoformat()
+     with get_connection() as conn:
+         conn.execute(
+             """
+-            INSERT INTO conversations (id, session_id, title, created_at, updated_at)
+-            VALUES (?, ?, ?, ?, ?)
++            INSERT INTO conversations (id, session_id, user_id, title, created_at, updated_at)
++            VALUES (?, ?, ?, ?, ?, ?)
+             """,
+-            (conversation_id, session_id, title, now, now),
++            (conversation_id, session_id, user_id, title, now, now),
+         )
+         conn.commit()
+     return conversation_id
+@@ -208,38 +301,38 @@ def touch_conversation(conversation_id):
+         conn.commit()
+ 
+ 
+-def list_conversations(session_id):
++def list_conversations(user_id):
+     with get_connection() as conn:
+         conn.row_factory = sqlite3.Row
+         rows = conn.execute(
+             """
+             SELECT id, title, created_at, updated_at
+             FROM conversations
+-            WHERE session_id = ?
++            WHERE user_id = ?
+             ORDER BY updated_at DESC
+             """,
+-            (session_id,),
++            (user_id,),
+         ).fetchall()
+         return [dict(row) for row in rows]
+ 
+ 
+-def get_conversation(conversation_id, session_id):
+-    """Fetch a conversation, scoped to the requesting session (ownership check)."""
++def get_conversation(conversation_id, user_id):
++    """Fetch a conversation, scoped to the requesting user (ownership check)."""
+     with get_connection() as conn:
+         conn.row_factory = sqlite3.Row
+         row = conn.execute(
+             """
+             SELECT id, title, share_id, created_at, updated_at
+             FROM conversations
+-            WHERE id = ? AND session_id = ?
++            WHERE id = ? AND user_id = ?
+             """,
+-            (conversation_id, session_id),
++            (conversation_id, user_id),
+         ).fetchone()
+         return dict(row) if row else None
+ 
+ 
+-def get_conversation_messages(conversation_id, session_id, limit=200):
+-    """Fetch a conversation's turns, scoped to the requesting session."""
++def get_conversation_messages(conversation_id, user_id, limit=200):
++    """Fetch a conversation's turns, scoped to the requesting user."""
+     with get_connection() as conn:
+         conn.row_factory = sqlite3.Row
+         rows = conn.execute(
+@@ -249,24 +342,24 @@ def get_conversation_messages(conversation_id, session_id, limit=200):
+             FROM chat_logs c
+             JOIN conversations conv ON conv.id = c.conversation_id
+             LEFT JOIN feedback f ON f.chat_log_id = c.id
+-            WHERE c.conversation_id = ? AND conv.session_id = ?
++            WHERE c.conversation_id = ? AND conv.user_id = ?
+             ORDER BY c.id ASC
+             LIMIT ?
+             """,
+-            (conversation_id, session_id, limit),
++            (conversation_id, user_id, limit),
+         ).fetchall()
+         return [dict(row) for row in rows]
+ 
+ 
+-def delete_conversation(conversation_id, session_id):
++def delete_conversation(conversation_id, user_id):
+     """Delete a conversation and its messages/feedback, scoped to the owner.
+ 
+     Returns True if a conversation was actually deleted.
+     """
+     with get_connection() as conn:
+         owned = conn.execute(
+-            "SELECT 1 FROM conversations WHERE id = ? AND session_id = ?",
+-            (conversation_id, session_id),
++            "SELECT 1 FROM conversations WHERE id = ? AND user_id = ?",
++            (conversation_id, user_id),
+         ).fetchone()
+         if not owned:
+             return False
+@@ -280,20 +373,20 @@ def delete_conversation(conversation_id, session_id):
+         )
+         conn.execute("DELETE FROM chat_logs WHERE conversation_id = ?", (conversation_id,))
+         conn.execute(
+-            "DELETE FROM conversations WHERE id = ? AND session_id = ?",
+-            (conversation_id, session_id),
++            "DELETE FROM conversations WHERE id = ? AND user_id = ?",
++            (conversation_id, user_id),
+         )
+         conn.commit()
+         return True
+ 
+ 
+-def set_conversation_share(conversation_id, session_id):
++def set_conversation_share(conversation_id, user_id):
+     """Enable sharing for a conversation, returning its share_id.
+ 
+     Idempotent: re-sharing an already-shared conversation returns the
+     same share_id instead of rotating it.
+     """
+-    conversation = get_conversation(conversation_id, session_id)
++    conversation = get_conversation(conversation_id, user_id)
+     if conversation is None:
+         return None
+     if conversation["share_id"]:
+@@ -302,8 +395,8 @@ def set_conversation_share(conversation_id, session_id):
+     share_id = secrets.token_urlsafe(16)
+     with get_connection() as conn:
+         conn.execute(
+-            "UPDATE conversations SET share_id = ? WHERE id = ? AND session_id = ?",
+-            (share_id, conversation_id, session_id),
++            "UPDATE conversations SET share_id = ? WHERE id = ? AND user_id = ?",
++            (share_id, conversation_id, user_id),
+         )
+         conn.commit()
+     return share_id
+diff --git a/static/css/style.css b/static/css/style.css
+index 166280b..1afb827 100644
+--- a/static/css/style.css
++++ b/static/css/style.css
+@@ -433,20 +433,29 @@ body {
+ }
+ 
+ .profile-item {
++  display: block;
++  width: 100%;
+   background: none;
+   border: none;
+   color: var(--text);
+   text-align: left;
++  text-decoration: none;
+   padding: 8px 10px;
+   border-radius: 8px;
+   font-size: 13px;
++  font-family: inherit;
+   cursor: pointer;
++  box-sizing: border-box;
+ }
+ 
+ .profile-item:hover {
+   background: var(--panel-light);
+ }
+ 
++.profile-dropdown form {
++  margin: 0;
++}
++
+ .toast {
+   position: fixed;
+   left: 50%;
+@@ -537,3 +546,151 @@ body.share-page {
+     font-size: 12px;
+   }
+ }
++
++/* --- Auth pages (login / signup / profile) --- */
++
++body.auth-page {
++  align-items: center;
++  justify-content: center;
++}
++
++.auth-card {
++  width: 100%;
++  max-width: 400px;
++  background: var(--panel);
++  border-radius: 20px;
++  padding: 28px;
++  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
++}
++
++.auth-brand {
++  margin-bottom: 20px;
++}
++
++.auth-brand p {
++  margin: 4px 0 0;
++  font-size: 12px;
++  color: var(--text-dim);
++}
++
++.flash-list {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++  margin-bottom: 16px;
++}
++
++.flash {
++  padding: 10px 14px;
++  border-radius: 10px;
++  font-size: 13px;
++  line-height: 1.4;
++}
++
++.flash-error {
++  background: rgba(248, 113, 113, 0.15);
++  color: #fca5a5;
++  border: 1px solid rgba(248, 113, 113, 0.3);
++}
++
++.flash-success {
++  background: rgba(74, 222, 128, 0.15);
++  color: #86efac;
++  border: 1px solid rgba(74, 222, 128, 0.3);
++}
++
++.auth-form {
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++}
++
++.auth-form label {
++  font-size: 12px;
++  color: var(--text-dim);
++  margin-top: 4px;
++}
++
++.auth-form input {
++  padding: 10px 12px;
++  border-radius: 10px;
++  border: 1px solid var(--panel-light);
++  background: #0f172a;
++  color: var(--text);
++  font-size: 14px;
++  outline: none;
++}
++
++.auth-form input:focus {
++  border-color: var(--accent-light);
++}
++
++.auth-form button {
++  margin-top: 10px;
++  background: var(--accent);
++  color: white;
++  border: none;
++  padding: 12px;
++  border-radius: 10px;
++  cursor: pointer;
++  font-size: 14px;
++  font-weight: 600;
++}
++
++.auth-form button:hover {
++  background: var(--accent-light);
++}
++
++.auth-switch {
++  margin: 18px 0 0;
++  text-align: center;
++  font-size: 13px;
++  color: var(--text-dim);
++}
++
++.auth-switch a {
++  color: var(--accent-light);
++}
++
++.profile-fields {
++  display: grid;
++  grid-template-columns: auto 1fr;
++  gap: 6px 14px;
++  margin: 0 0 16px;
++}
++
++.profile-fields dt {
++  font-size: 12px;
++  color: var(--text-dim);
++}
++
++.profile-fields dd {
++  margin: 0;
++  font-size: 14px;
++  color: var(--text);
++}
++
++.profile-note {
++  font-size: 12px;
++  color: var(--text-dim);
++  line-height: 1.5;
++  margin: 0 0 20px;
++}
++
++.auth-actions {
++  display: flex;
++  gap: 10px;
++}
++
++.auth-actions form {
++  margin: 0;
++  flex: 1;
++}
++
++.auth-actions .header-btn {
++  display: block;
++  width: 100%;
++  text-align: center;
++  text-decoration: none;
++  box-sizing: border-box;
++}
+diff --git a/static/js/script.js b/static/js/script.js
+index 7c82a38..b90329a 100644
+--- a/static/js/script.js
++++ b/static/js/script.js
+@@ -30,6 +30,18 @@ function showToast(message) {
+   }, 2500);
+ }
+ 
++// Wraps fetch() for the protected /api/* endpoints: if the session has
++// expired or logged out in another tab, the backend returns 401 — send
++// the user back to the login page instead of showing a confusing error.
++async function apiFetch(url, options) {
++  const res = await fetch(url, options);
++  if (res.status === 401) {
++    window.location.href = "/login";
++    throw new Error("unauthenticated");
++  }
++  return res;
++}
++
+ function createFeedbackElement(messageId, existingRating) {
+   const container = document.createElement("div");
+   container.className = "feedback";
+@@ -106,7 +118,7 @@ async function submitFeedback(container, rating) {
+   buttons.forEach((btn) => (btn.disabled = true));
+ 
+   try {
+-    const res = await fetch("/api/feedback", {
++    const res = await apiFetch("/api/feedback", {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify({ message_id: messageId, rating }),
+@@ -155,7 +167,7 @@ async function sendMessage(text) {
+   const typingEl = appendTyping();
+ 
+   try {
+-    const res = await fetch("/api/chat", {
++    const res = await apiFetch("/api/chat", {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify({ message: text }),
+@@ -248,7 +260,7 @@ function highlightActiveConversation() {
+ 
+ async function loadConversations() {
+   try {
+-    const res = await fetch("/api/conversations");
++    const res = await apiFetch("/api/conversations");
+     if (!res.ok) return;
+     renderConversationList(await res.json());
+   } catch (err) {
+@@ -258,7 +270,7 @@ async function loadConversations() {
+ 
+ async function openConversation(conversationId) {
+   try {
+-    const res = await fetch(`/api/conversations/${conversationId}`);
++    const res = await apiFetch(`/api/conversations/${conversationId}`);
+     const data = await res.json();
+ 
+     if (!res.ok || data.error) {
+@@ -281,7 +293,7 @@ async function deleteConversationHandler(conversationId) {
+   if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+ 
+   try {
+-    const res = await fetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
++    const res = await apiFetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
+     const data = await res.json();
+ 
+     if (!res.ok || data.error) {
+@@ -317,7 +329,7 @@ sidebar.addEventListener("click", (e) => {
+ 
+ newChatBtn.addEventListener("click", async () => {
+   try {
+-    await fetch("/api/reset", { method: "POST" });
++    await apiFetch("/api/reset", { method: "POST" });
+   } catch (err) {
+     // Fall through and clear the local view even if the request failed.
+   }
+@@ -359,7 +371,7 @@ shareBtn.addEventListener("click", async () => {
+   }
+ 
+   try {
+-    const res = await fetch(`/api/conversations/${currentConversationId}/share`, {
++    const res = await apiFetch(`/api/conversations/${currentConversationId}/share`, {
+       method: "POST",
+     });
+     const data = await res.json();
+@@ -381,7 +393,10 @@ shareBtn.addEventListener("click", async () => {
+   }
+ });
+ 
+-// --- Profile menu (UI only — no auth backend yet) --------------------------
++// --- Profile menu -----------------------------------------------------
++// "Profile"/"Settings" are real links and "Logout" a real form (see
++// templates/index.html) — no JS wiring needed for them beyond the
++// open/close toggle below.
+ 
+ profileBtn.addEventListener("click", (e) => {
+   e.stopPropagation();
+@@ -404,10 +419,4 @@ document.addEventListener("keydown", (e) => {
+   }
+ });
+ 
+-profileDropdown.querySelectorAll(".profile-item[data-placeholder]").forEach((btn) => {
+-  btn.addEventListener("click", () => {
+-    showToast("Coming soon — accounts aren't implemented yet.");
+-  });
+-});
+-
+ scrollToBottom();
+diff --git a/templates/index.html b/templates/index.html
+index 4a22e16..ced0f12 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -42,13 +42,15 @@
+           <button id="share-btn" class="header-btn" title="Share this conversation">Share</button>
+           <div class="profile-menu">
+             <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile menu">
+-              {{ (student_name[0] if student_name else 'S')|upper }}
++              {{ current_user.username[0]|upper }}
+             </button>
+             <div class="profile-dropdown" id="profile-dropdown" hidden>
+-              <div class="profile-name">{{ student_name or 'Guest student' }}</div>
+-              <button type="button" class="profile-item" data-placeholder="true">Profile</button>
+-              <button type="button" class="profile-item" data-placeholder="true">Settings</button>
+-              <button type="button" class="profile-item" data-placeholder="true">Logout</button>
++              <div class="profile-name">{{ current_user.username }}</div>
++              <a class="profile-item" href="{{ url_for('profile_page') }}">Profile</a>
++              <a class="profile-item" href="{{ url_for('profile_page') }}">Settings</a>
++              <form method="post" action="{{ url_for('logout_page') }}">
++                <button type="submit" class="profile-item profile-item-btn">Logout</button>
++              </form>
+             </div>
+           </div>
+         </div>
+diff --git a/templates/login.html b/templates/login.html
+new file mode 100644
+index 0000000..26a7016
+--- /dev/null
++++ b/templates/login.html
+@@ -0,0 +1,44 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>Log in · AI Academic Support Chatbot</title>
++  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
++</head>
++<body class="auth-page">
++  <div class="auth-card">
++    <div class="brand auth-brand">
++      <span class="brand-icon">🎓</span>
++      <div>
++        <h1>Academic Support Chatbot</h1>
++        <p>Log in to continue your conversations</p>
++      </div>
++    </div>
++
++    {% with messages = get_flashed_messages(with_categories=true) %}
++      {% if messages %}
++      <div class="flash-list">
++        {% for category, message in messages %}
++        <div class="flash flash-{{ category }}">{{ message }}</div>
++        {% endfor %}
++      </div>
++      {% endif %}
++    {% endwith %}
++
++    <form method="post" action="{{ url_for('login_page') }}" class="auth-form">
++      <input type="hidden" name="next" value="{{ next or '' }}" />
++
++      <label for="email">Email</label>
++      <input id="email" name="email" type="email" autocomplete="email" required value="{{ email or '' }}" />
++
++      <label for="password">Password</label>
++      <input id="password" name="password" type="password" autocomplete="current-password" required />
++
++      <button type="submit">Log in</button>
++    </form>
++
++    <p class="auth-switch">Don't have an account? <a href="{{ url_for('signup_page') }}">Sign up</a></p>
++  </div>
++</body>
++</html>
+diff --git a/templates/profile.html b/templates/profile.html
+new file mode 100644
+index 0000000..a32415c
+--- /dev/null
++++ b/templates/profile.html
+@@ -0,0 +1,52 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>Profile · AI Academic Support Chatbot</title>
++  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
++</head>
++<body class="auth-page">
++  <div class="auth-card">
++    <div class="brand auth-brand">
++      <span class="brand-icon">🎓</span>
++      <div>
++        <h1>Profile &amp; settings</h1>
++        <p>Your account details</p>
++      </div>
++    </div>
++
++    {% with messages = get_flashed_messages(with_categories=true) %}
++      {% if messages %}
++      <div class="flash-list">
++        {% for category, message in messages %}
++        <div class="flash flash-{{ category }}">{{ message }}</div>
++        {% endfor %}
++      </div>
++      {% endif %}
++    {% endwith %}
++
++    <dl class="profile-fields">
++      <dt>Username</dt>
++      <dd>{{ user.username }}</dd>
++      <dt>Email</dt>
++      <dd>{{ user.email }}</dd>
++      <dt>Member since</dt>
++      <dd>{{ user.created_at[:10] }}</dd>
++    </dl>
++
++    <p class="profile-note">
++      Password changes and other account settings aren't available yet —
++      this page is a placeholder for that, distinct from the account info
++      above which is fully live.
++    </p>
++
++    <div class="auth-actions">
++      <a class="header-btn" href="{{ url_for('index') }}">Back to chat</a>
++      <form method="post" action="{{ url_for('logout_page') }}">
++        <button type="submit" class="header-btn">Log out</button>
++      </form>
++    </div>
++  </div>
++</body>
++</html>
+diff --git a/templates/signup.html b/templates/signup.html
+new file mode 100644
+index 0000000..b1ad8e5
+--- /dev/null
++++ b/templates/signup.html
+@@ -0,0 +1,49 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>Sign up · AI Academic Support Chatbot</title>
++  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
++</head>
++<body class="auth-page">
++  <div class="auth-card">
++    <div class="brand auth-brand">
++      <span class="brand-icon">🎓</span>
++      <div>
++        <h1>Academic Support Chatbot</h1>
++        <p>Create an account to save your conversations</p>
++      </div>
++    </div>
++
++    {% with messages = get_flashed_messages(with_categories=true) %}
++      {% if messages %}
++      <div class="flash-list">
++        {% for category, message in messages %}
++        <div class="flash flash-{{ category }}">{{ message }}</div>
++        {% endfor %}
++      </div>
++      {% endif %}
++    {% endwith %}
++
++    <form method="post" action="{{ url_for('signup_page') }}" class="auth-form">
++      <label for="username">Username</label>
++      <input id="username" name="username" type="text" autocomplete="username" required
++             minlength="3" maxlength="30" value="{{ username or '' }}" />
++
++      <label for="email">Email</label>
++      <input id="email" name="email" type="email" autocomplete="email" required value="{{ email or '' }}" />
++
++      <label for="password">Password</label>
++      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="8" />
++
++      <label for="confirm_password">Confirm password</label>
++      <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" required minlength="8" />
++
++      <button type="submit">Create account</button>
++    </form>
++
++    <p class="auth-switch">Already have an account? <a href="{{ url_for('login_page') }}">Log in</a></p>
++  </div>
++</body>
++</html>
