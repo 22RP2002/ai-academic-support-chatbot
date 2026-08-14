@@ -36,6 +36,11 @@
       <div class="message bot">
         <div class="bubble">{{ turn.response }}</div>
         <div class="meta">intent: {{ turn.intent }} · confidence: {{ "%.2f"|format(turn.confidence) }}</div>
+        <div class="feedback" data-message-id="{{ turn.id }}">
+          <button type="button" class="feedback-btn feedback-up{{ ' selected' if turn.feedback_rating == 'up' else '' }}" data-rating="up" aria-label="Helpful" {{ 'disabled' if turn.feedback_rating }}>👍</button>
+          <button type="button" class="feedback-btn feedback-down{{ ' selected' if turn.feedback_rating == 'down' else '' }}" data-rating="down" aria-label="Not helpful" {{ 'disabled' if turn.feedback_rating }}>👎</button>
+          <span class="feedback-thanks" {{ '' if turn.feedback_rating else 'hidden' }}>Thanks for your feedback!</span>
+        </div>
       </div>
       {% endfor %}
     </main>

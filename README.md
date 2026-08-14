@@ -103,6 +103,52 @@ Try asking things like:
 Each bot reply shows the predicted **intent** and **confidence score**
 under the message bubble — useful for demonstrating the ML pipeline live.
 
+## Response feedback (👍 / 👎)
+
+Every bot reply that comes from a real chat turn (i.e. not the static
+welcome message) shows a 👍 **Helpful** / 👎 **Not Helpful** pair of
+buttons under it.
+
+How it works:
+
+- `POST /api/chat` now also returns a `message_id` — the row id of that
+  turn in the `chat_logs` table (`chatbot/storage.py`).
+- Clicking a button sends `POST /api/feedback` with `{"message_id": ..., "rating": "up" | "down"}`
+  via `fetch` (no page reload). `static/js/script.js` uses one delegated
+  click handler on the chat window, so it works for both freshly-sent
+  replies and history re-rendered from the database on page load.
+- Feedback is stored in a dedicated `feedback` table in `chat_history.db`,
+  alongside `chat_logs`:
+
+  ```sql
+  CREATE TABLE feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_log_id INTEGER NOT NULL UNIQUE REFERENCES chat_logs(id),
+      session_id TEXT NOT NULL,
+      message TEXT NOT NULL,
+      response TEXT NOT NULL,
+      intent TEXT,
+      rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+      created_at TEXT NOT NULL
+  )
+  ```
+
+- **Duplicate prevention** happens twice: the UI disables both buttons the
+  instant one is clicked (before the request even completes), and the
+  `UNIQUE` constraint on `chat_log_id` means the database itself rejects a
+  second rating for the same turn even if the UI is bypassed — the insert
+  is silently ignored (`INSERT OR IGNORE`) and the API reports
+  `"duplicate": true` instead of erroring.
+- Reloading the page preserves rated state: `get_history()` left-joins
+  `feedback` onto `chat_logs`, so a previously-rated turn re-renders with
+  its button already marked selected/disabled.
+- Errors (network failure, bad request, DB error) never break the chat —
+  `/api/feedback` returns a JSON `error` field with an appropriate status
+  code (`400`/`404`/`500`), and the frontend re-enables the buttons with a
+  small inline "Couldn't save feedback — try again" message on failure.
+- Intent classification itself is untouched — feedback is purely additive
+  logging alongside the existing `chat_logs` table.
+
 ## Extending the project
 
 - Add more intents/patterns to `data/intents.json`, then re-run

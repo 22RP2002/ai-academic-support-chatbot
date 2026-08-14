@@ -8,7 +8,32 @@ function scrollToBottom() {
   chatWindow.scrollTop = chatWindow.scrollHeight;
 }
 
-function appendMessage(text, sender, meta) {
+function createFeedbackElement(messageId, existingRating) {
+  const container = document.createElement("div");
+  container.className = "feedback";
+  container.dataset.messageId = messageId;
+
+  ["up", "down"].forEach((rating) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `feedback-btn feedback-${rating}` + (existingRating === rating ? " selected" : "");
+    btn.dataset.rating = rating;
+    btn.setAttribute("aria-label", rating === "up" ? "Helpful" : "Not helpful");
+    btn.textContent = rating === "up" ? "👍" : "👎";
+    btn.disabled = Boolean(existingRating);
+    container.appendChild(btn);
+  });
+
+  const thanks = document.createElement("span");
+  thanks.className = "feedback-thanks";
+  thanks.textContent = "Thanks for your feedback!";
+  thanks.hidden = !existingRating;
+  container.appendChild(thanks);
+
+  return container;
+}
+
+function appendMessage(text, sender, meta, messageId) {
   const wrapper = document.createElement("div");
   wrapper.className = `message ${sender}`;
 
@@ -24,10 +49,57 @@ function appendMessage(text, sender, meta) {
     wrapper.appendChild(metaEl);
   }
 
+  if (sender === "bot" && messageId != null) {
+    wrapper.appendChild(createFeedbackElement(messageId, null));
+  }
+
   chatWindow.appendChild(wrapper);
   scrollToBottom();
   return wrapper;
 }
+
+async function submitFeedback(container, rating) {
+  const messageId = Number(container.dataset.messageId);
+  const buttons = container.querySelectorAll(".feedback-btn");
+  const thanks = container.querySelector(".feedback-thanks");
+
+  buttons.forEach((btn) => (btn.disabled = true));
+
+  try {
+    const res = await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message_id: messageId, rating }),
+    });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      throw new Error(data.error || "request failed");
+    }
+
+    buttons.forEach((btn) => {
+      btn.classList.toggle("selected", btn.dataset.rating === rating);
+    });
+    thanks.hidden = false;
+  } catch (err) {
+    buttons.forEach((btn) => (btn.disabled = false));
+    let errorEl = container.querySelector(".feedback-error");
+    if (!errorEl) {
+      errorEl = document.createElement("span");
+      errorEl.className = "feedback-error";
+      container.appendChild(errorEl);
+    }
+    errorEl.textContent = "Couldn't save feedback — try again.";
+  }
+}
+
+chatWindow.addEventListener("click", (e) => {
+  const btn = e.target.closest(".feedback-btn");
+  if (!btn || btn.disabled) return;
+  const container = btn.closest(".feedback");
+  if (!container) return;
+  submitFeedback(container, btn.dataset.rating);
+});
 
 function appendTyping() {
   const wrapper = document.createElement("div");
@@ -59,7 +131,8 @@ async function sendMessage(text) {
     appendMessage(
       data.response,
       "bot",
-      `intent: ${data.intent} · confidence: ${data.confidence.toFixed(2)}`
+      `intent: ${data.intent} · confidence: ${data.confidence.toFixed(2)}`,
+      data.message_id
     );
   } catch (err) {
     typingEl.remove();

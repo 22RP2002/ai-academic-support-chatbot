@@ -196,3 +196,49 @@ body {
   font-style: italic;
   color: var(--text-dim);
 }
+
+.feedback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 0 4px;
+}
+
+.feedback-btn {
+  background: var(--panel-light);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.feedback-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--panel-light);
+  border-color: var(--accent-light);
+}
+
+.feedback-btn.selected {
+  opacity: 1;
+  border-color: var(--accent-light);
+  background: var(--accent);
+}
+
+.feedback-btn:disabled {
+  cursor: default;
+}
+
+.feedback-thanks {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.feedback-error {
+  font-size: 11px;
+  color: #f87171;
+}

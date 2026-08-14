@@ -10,7 +10,7 @@ from flask import Flask, jsonify, render_template, request, session
 
 from chatbot.engine import ChatEngine
 from chatbot.preprocessing import extract_name
-from chatbot.storage import get_history, init_db, log_message
+from chatbot.storage import get_chat_log, get_history, init_db, log_feedback, log_message
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
@@ -53,7 +53,7 @@ def chat():
     else:
         result = engine.get_response(message, name=session.get("student_name"))
 
-    log_message(
+    message_id = log_message(
         session_id=session["session_id"],
         student_name=session.get("student_name"),
         message=message,
@@ -64,6 +64,7 @@ def chat():
 
     return jsonify(
         {
+            "message_id": message_id,
             "response": result["response"],
             "intent": result["intent"],
             "confidence": result["confidence"],
@@ -75,6 +76,39 @@ def chat():
 @app.route("/api/history")
 def history():
     return jsonify(get_history(session["session_id"]))
+
+
+@app.route("/api/feedback", methods=["POST"])
+def feedback():
+    data = request.get_json(silent=True) or {}
+    rating = data.get("rating")
+    message_id = data.get("message_id")
+
+    if rating not in ("up", "down"):
+        return jsonify({"error": "rating must be 'up' or 'down'"}), 400
+
+    try:
+        message_id = int(message_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "message_id is required"}), 400
+
+    chat_log = get_chat_log(message_id, session["session_id"])
+    if chat_log is None:
+        return jsonify({"error": "message not found for this session"}), 404
+
+    try:
+        inserted = log_feedback(
+            chat_log_id=chat_log["id"],
+            session_id=session["session_id"],
+            message=chat_log["message"],
+            response=chat_log["response"],
+            intent=chat_log["intent"],
+            rating=rating,
+        )
+    except Exception:
+        return jsonify({"error": "failed to save feedback"}), 500
+
+    return jsonify({"status": "ok", "duplicate": not inserted})
 
 
 @app.route("/api/reset", methods=["POST"])
