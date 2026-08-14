@@ -30,6 +30,18 @@ function showToast(message) {
   }, 2500);
 }
 
+// Wraps fetch() for the protected /api/* endpoints: if the session has
+// expired or logged out in another tab, the backend returns 401 — send
+// the user back to the login page instead of showing a confusing error.
+async function apiFetch(url, options) {
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    window.location.href = "/login";
+    throw new Error("unauthenticated");
+  }
+  return res;
+}
+
 function createFeedbackElement(messageId, existingRating) {
   const container = document.createElement("div");
   container.className = "feedback";
@@ -106,7 +118,7 @@ async function submitFeedback(container, rating) {
   buttons.forEach((btn) => (btn.disabled = true));
 
   try {
-    const res = await fetch("/api/feedback", {
+    const res = await apiFetch("/api/feedback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message_id: messageId, rating }),
@@ -155,7 +167,7 @@ async function sendMessage(text) {
   const typingEl = appendTyping();
 
   try {
-    const res = await fetch("/api/chat", {
+    const res = await apiFetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text }),
@@ -248,7 +260,7 @@ function highlightActiveConversation() {
 
 async function loadConversations() {
   try {
-    const res = await fetch("/api/conversations");
+    const res = await apiFetch("/api/conversations");
     if (!res.ok) return;
     renderConversationList(await res.json());
   } catch (err) {
@@ -258,7 +270,7 @@ async function loadConversations() {
 
 async function openConversation(conversationId) {
   try {
-    const res = await fetch(`/api/conversations/${conversationId}`);
+    const res = await apiFetch(`/api/conversations/${conversationId}`);
     const data = await res.json();
 
     if (!res.ok || data.error) {
@@ -281,7 +293,7 @@ async function deleteConversationHandler(conversationId) {
   if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
 
   try {
-    const res = await fetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
     const data = await res.json();
 
     if (!res.ok || data.error) {
@@ -317,7 +329,7 @@ sidebar.addEventListener("click", (e) => {
 
 newChatBtn.addEventListener("click", async () => {
   try {
-    await fetch("/api/reset", { method: "POST" });
+    await apiFetch("/api/reset", { method: "POST" });
   } catch (err) {
     // Fall through and clear the local view even if the request failed.
   }
@@ -359,7 +371,7 @@ shareBtn.addEventListener("click", async () => {
   }
 
   try {
-    const res = await fetch(`/api/conversations/${currentConversationId}/share`, {
+    const res = await apiFetch(`/api/conversations/${currentConversationId}/share`, {
       method: "POST",
     });
     const data = await res.json();
@@ -381,7 +393,10 @@ shareBtn.addEventListener("click", async () => {
   }
 });
 
-// --- Profile menu (UI only — no auth backend yet) --------------------------
+// --- Profile menu -----------------------------------------------------
+// "Profile"/"Settings" are real links and "Logout" a real form (see
+// templates/index.html) — no JS wiring needed for them beyond the
+// open/close toggle below.
 
 profileBtn.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -402,12 +417,6 @@ document.addEventListener("keydown", (e) => {
     profileDropdown.hidden = true;
     profileBtn.setAttribute("aria-expanded", "false");
   }
-});
-
-profileDropdown.querySelectorAll(".profile-item[data-placeholder]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    showToast("Coming soon — accounts aren't implemented yet.");
-  });
 });
 
 scrollToBottom();

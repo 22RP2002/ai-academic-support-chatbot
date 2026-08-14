@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log in · AI Academic Support Chatbot</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body class="auth-page">
+  <div class="auth-card">
+    <div class="brand auth-brand">
+      <span class="brand-icon">🎓</span>
+      <div>
+        <h1>Academic Support Chatbot</h1>
+        <p>Log in to continue your conversations</p>
+      </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="flash-list">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endwith %}
+
+    <form method="post" action="{{ url_for('login_page') }}" class="auth-form">
+      <input type="hidden" name="next" value="{{ next or '' }}" />
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email" required value="{{ email or '' }}" />
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+      <button type="submit">Log in</button>
+    </form>
+
+    <p class="auth-switch">Don't have an account? <a href="{{ url_for('signup_page') }}">Sign up</a></p>
+  </div>
+</body>
+</html>

@@ -42,13 +42,15 @@
           <button id="share-btn" class="header-btn" title="Share this conversation">Share</button>
           <div class="profile-menu">
             <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile menu">
-              {{ (student_name[0] if student_name else 'S')|upper }}
+              {{ current_user.username[0]|upper }}
             </button>
             <div class="profile-dropdown" id="profile-dropdown" hidden>
-              <div class="profile-name">{{ student_name or 'Guest student' }}</div>
-              <button type="button" class="profile-item" data-placeholder="true">Profile</button>
-              <button type="button" class="profile-item" data-placeholder="true">Settings</button>
-              <button type="button" class="profile-item" data-placeholder="true">Logout</button>
+              <div class="profile-name">{{ current_user.username }}</div>
+              <a class="profile-item" href="{{ url_for('profile_page') }}">Profile</a>
+              <a class="profile-item" href="{{ url_for('profile_page') }}">Settings</a>
+              <form method="post" action="{{ url_for('logout_page') }}">
+                <button type="submit" class="profile-item profile-item-btn">Logout</button>
+              </form>
             </div>
           </div>
         </div>

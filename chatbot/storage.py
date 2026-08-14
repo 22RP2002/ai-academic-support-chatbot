@@ -1,13 +1,19 @@
 """SQLite-backed chat history storage.
 
-Keeps a record of every exchange (per browser session) so the demo can
-show conversation history / a simple "personalised support" trail —
-without requiring a full user auth system.
+Keeps a record of every exchange so the app can show conversation
+history / a simple "personalised support" trail, plus real user accounts.
 
 Messages are grouped into named "conversations" (a ChatGPT-style sidebar
-concept). session_id remains the durable per-browser identity; a
-conversation just groups a subset of that session's chat_logs rows under
-a title, so the sidebar can list/switch/delete threads independently.
+concept), each owned by a user (conversations.user_id). Ownership of
+chat_logs/feedback rows is derived by joining through their conversation
+rather than duplicating user_id onto every table — the minimum schema
+needed for per-user access control.
+
+Schema notes for an eventual SQLite -> PostgreSQL move: ids are plain
+TEXT (uuid4 hex / url-safe tokens), all queries use parameterized SQL, and
+no SQLite-only column types/extensions are used. The one SQLite-specific
+piece is the migration's `PRAGMA table_info` column check in init_db();
+Postgres would use `information_schema.columns` there instead.
 """
 import os
 import secrets
@@ -16,10 +22,16 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 
+from werkzeug.security import generate_password_hash
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "chat_history.db")
 
 TITLE_MAX_LEN = 40
+
+
+class DuplicateUserError(Exception):
+    """Raised when a signup would violate the users table's UNIQUE constraints."""
 
 
 @contextmanager
@@ -33,6 +45,17 @@ def get_connection():
 
 def init_db():
     with get_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_logs (
@@ -77,13 +100,24 @@ def init_db():
         # Non-destructive migration: older databases (pre-sidebar feature)
         # have chat_logs without conversation_id. Existing rows simply stay
         # unattached to any conversation (they predate the concept).
-        existing_columns = {
+        chat_log_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(chat_logs)")
         }
-        if "conversation_id" not in existing_columns:
+        if "conversation_id" not in chat_log_columns:
             conn.execute(
                 "ALTER TABLE chat_logs ADD COLUMN conversation_id TEXT "
                 "REFERENCES conversations(id)"
+            )
+
+        # Non-destructive migration: older databases (pre-auth feature) have
+        # conversations without user_id. Existing (anonymous) conversations
+        # simply become inaccessible to any account — not deleted.
+        conversation_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversations)")
+        }
+        if "user_id" not in conversation_columns:
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN user_id TEXT REFERENCES users(id)"
             )
 
         conn.commit()
@@ -130,17 +164,20 @@ def get_history(session_id, limit=50):
         return [dict(row) for row in rows]
 
 
-def get_chat_log(chat_log_id, session_id):
-    """Fetch a single logged turn, scoped to the requesting session."""
+def get_chat_log_for_user(chat_log_id, user_id):
+    """Fetch a single logged turn, scoped to the requesting user via its
+    conversation's ownership (chat_logs itself carries no user_id — the
+    minimum schema needed is the one on conversations)."""
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
-            SELECT id, message, response, intent
-            FROM chat_logs
-            WHERE id = ? AND session_id = ?
+            SELECT c.id, c.message, c.response, c.intent
+            FROM chat_logs c
+            JOIN conversations conv ON conv.id = c.conversation_id
+            WHERE c.id = ? AND conv.user_id = ?
             """,
-            (chat_log_id, session_id),
+            (chat_log_id, user_id),
         ).fetchone()
         return dict(row) if row else None
 
@@ -173,6 +210,62 @@ def log_feedback(chat_log_id, session_id, message, response, intent, rating):
         return cursor.rowcount > 0
 
 
+def create_user(username, email, password):
+    """Create a new account with a securely hashed password.
+
+    Raises DuplicateUserError if the username or email is already taken
+    (also guards the race between the pre-check in app.py and this insert).
+    """
+    user_id = uuid.uuid4().hex
+    now = datetime.utcnow().isoformat()
+    password_hash = generate_password_hash(password)
+    with get_connection() as conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO users (id, username, email, password_hash, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, username, email, password_hash, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise DuplicateUserError("username or email already in use") from exc
+    return {"id": user_id, "username": username, "email": email, "created_at": now}
+
+
+def get_user_by_email(email):
+    """Returns the full row (including password_hash) for login verification."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, username, email, password_hash, created_at FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_username(username):
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, username, email, created_at FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_id(user_id):
+    """Public profile fields only — never returns password_hash."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, username, email, created_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def generate_title(message):
     """Derive a short sidebar title from the first message of a conversation."""
     title = " ".join((message or "").split())
@@ -183,16 +276,16 @@ def generate_title(message):
     return title[0].upper() + title[1:]
 
 
-def create_conversation(session_id, title):
+def create_conversation(user_id, session_id, title):
     conversation_id = uuid.uuid4().hex
     now = datetime.utcnow().isoformat()
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO conversations (id, session_id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO conversations (id, session_id, user_id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (conversation_id, session_id, title, now, now),
+            (conversation_id, session_id, user_id, title, now, now),
         )
         conn.commit()
     return conversation_id
@@ -208,38 +301,38 @@ def touch_conversation(conversation_id):
         conn.commit()
 
 
-def list_conversations(session_id):
+def list_conversations(user_id):
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
             SELECT id, title, created_at, updated_at
             FROM conversations
-            WHERE session_id = ?
+            WHERE user_id = ?
             ORDER BY updated_at DESC
             """,
-            (session_id,),
+            (user_id,),
         ).fetchall()
         return [dict(row) for row in rows]
 
 
-def get_conversation(conversation_id, session_id):
-    """Fetch a conversation, scoped to the requesting session (ownership check)."""
+def get_conversation(conversation_id, user_id):
+    """Fetch a conversation, scoped to the requesting user (ownership check)."""
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
             SELECT id, title, share_id, created_at, updated_at
             FROM conversations
-            WHERE id = ? AND session_id = ?
+            WHERE id = ? AND user_id = ?
             """,
-            (conversation_id, session_id),
+            (conversation_id, user_id),
         ).fetchone()
         return dict(row) if row else None
 
 
-def get_conversation_messages(conversation_id, session_id, limit=200):
-    """Fetch a conversation's turns, scoped to the requesting session."""
+def get_conversation_messages(conversation_id, user_id, limit=200):
+    """Fetch a conversation's turns, scoped to the requesting user."""
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -249,24 +342,24 @@ def get_conversation_messages(conversation_id, session_id, limit=200):
             FROM chat_logs c
             JOIN conversations conv ON conv.id = c.conversation_id
             LEFT JOIN feedback f ON f.chat_log_id = c.id
-            WHERE c.conversation_id = ? AND conv.session_id = ?
+            WHERE c.conversation_id = ? AND conv.user_id = ?
             ORDER BY c.id ASC
             LIMIT ?
             """,
-            (conversation_id, session_id, limit),
+            (conversation_id, user_id, limit),
         ).fetchall()
         return [dict(row) for row in rows]
 
 
-def delete_conversation(conversation_id, session_id):
+def delete_conversation(conversation_id, user_id):
     """Delete a conversation and its messages/feedback, scoped to the owner.
 
     Returns True if a conversation was actually deleted.
     """
     with get_connection() as conn:
         owned = conn.execute(
-            "SELECT 1 FROM conversations WHERE id = ? AND session_id = ?",
-            (conversation_id, session_id),
+            "SELECT 1 FROM conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id),
         ).fetchone()
         if not owned:
             return False
@@ -280,20 +373,20 @@ def delete_conversation(conversation_id, session_id):
         )
         conn.execute("DELETE FROM chat_logs WHERE conversation_id = ?", (conversation_id,))
         conn.execute(
-            "DELETE FROM conversations WHERE id = ? AND session_id = ?",
-            (conversation_id, session_id),
+            "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id),
         )
         conn.commit()
         return True
 
 
-def set_conversation_share(conversation_id, session_id):
+def set_conversation_share(conversation_id, user_id):
     """Enable sharing for a conversation, returning its share_id.
 
     Idempotent: re-sharing an already-shared conversation returns the
     same share_id instead of rotating it.
     """
-    conversation = get_conversation(conversation_id, session_id)
+    conversation = get_conversation(conversation_id, user_id)
     if conversation is None:
         return None
     if conversation["share_id"]:
@@ -302,8 +395,8 @@ def set_conversation_share(conversation_id, session_id):
     share_id = secrets.token_urlsafe(16)
     with get_connection() as conn:
         conn.execute(
-            "UPDATE conversations SET share_id = ? WHERE id = ? AND session_id = ?",
-            (share_id, conversation_id, session_id),
+            "UPDATE conversations SET share_id = ? WHERE id = ? AND user_id = ?",
+            (share_id, conversation_id, user_id),
         )
         conn.commit()
     return share_id

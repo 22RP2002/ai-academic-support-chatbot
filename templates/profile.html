@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Profile · AI Academic Support Chatbot</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body class="auth-page">
+  <div class="auth-card">
+    <div class="brand auth-brand">
+      <span class="brand-icon">🎓</span>
+      <div>
+        <h1>Profile &amp; settings</h1>
+        <p>Your account details</p>
+      </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="flash-list">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endwith %}
+
+    <dl class="profile-fields">
+      <dt>Username</dt>
+      <dd>{{ user.username }}</dd>
+      <dt>Email</dt>
+      <dd>{{ user.email }}</dd>
+      <dt>Member since</dt>
+      <dd>{{ user.created_at[:10] }}</dd>
+    </dl>
+
+    <p class="profile-note">
+      Password changes and other account settings aren't available yet —
+      this page is a placeholder for that, distinct from the account info
+      above which is fully live.
+    </p>
+
+    <div class="auth-actions">
+      <a class="header-btn" href="{{ url_for('index') }}">Back to chat</a>
+      <form method="post" action="{{ url_for('logout_page') }}">
+        <button type="submit" class="header-btn">Log out</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
