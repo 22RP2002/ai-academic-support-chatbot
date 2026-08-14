@@ -1,0 +1,1294 @@
+diff --git a/app.py b/app.py
+index d3ff1dd..aad7966 100644
+--- a/app.py
++++ b/app.py
+@@ -5,15 +5,36 @@ NLTK intent-classification chatbot engine (see chatbot/engine.py).
+ """
+ import os
+ import uuid
++from datetime import timedelta
+ 
+-from flask import Flask, jsonify, render_template, request, session
++from flask import Flask, abort, jsonify, render_template, request, session
+ 
+ from chatbot.engine import ChatEngine
+ from chatbot.preprocessing import extract_name
+-from chatbot.storage import get_chat_log, get_history, init_db, log_feedback, log_message
++from chatbot.storage import (
++    create_conversation,
++    delete_conversation,
++    generate_title,
++    get_chat_log,
++    get_conversation,
++    get_conversation_by_share_id,
++    get_conversation_messages,
++    get_history,
++    get_share_messages,
++    init_db,
++    list_conversations,
++    log_feedback,
++    log_message,
++    set_conversation_share,
++    touch_conversation,
++)
+ 
+ app = Flask(__name__)
+ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
++# Sidebar history relies on session_id as a durable per-browser identity, so
++# the cookie needs to outlive a single browser session (default Flask
++# behaviour expires it when the browser closes).
++app.permanent_session_lifetime = timedelta(days=365)
+ 
+ init_db()
+ engine = ChatEngine()
+@@ -21,16 +42,35 @@ engine = ChatEngine()
+ 
+ @app.before_request
+ def ensure_session():
++    session.permanent = True
+     if "session_id" not in session:
+         session["session_id"] = str(uuid.uuid4())
+     session.setdefault("student_name", None)
++    session.setdefault("conversation_id", None)
+ 
+ 
+ @app.route("/")
+ def index():
+-    history = get_history(session["session_id"])
++    conversation_id = session.get("conversation_id")
++    current_conversation = None
++    history = []
++
++    if conversation_id:
++        current_conversation = get_conversation(conversation_id, session["session_id"])
++        if current_conversation is None:
++            # Conversation was deleted (or belongs to a stale cookie) — fall
++            # back to a fresh, empty chat instead of erroring.
++            session["conversation_id"] = None
++        else:
++            history = get_conversation_messages(conversation_id, session["session_id"])
++
+     return render_template(
+-        "index.html", history=history, student_name=session.get("student_name")
++        "index.html",
++        history=history,
++        student_name=session.get("student_name"),
++        conversations=list_conversations(session["session_id"]),
++        current_conversation_id=session.get("conversation_id"),
++        current_conversation=current_conversation,
+     )
+ 
+ 
+@@ -53,6 +93,14 @@ def chat():
+     else:
+         result = engine.get_response(message, name=session.get("student_name"))
+ 
++    conversation_id = session.get("conversation_id")
++    is_new_conversation = conversation_id is None
++    if is_new_conversation:
++        conversation_id = create_conversation(session["session_id"], generate_title(message))
++        session["conversation_id"] = conversation_id
++    else:
++        touch_conversation(conversation_id)
++
+     message_id = log_message(
+         session_id=session["session_id"],
+         student_name=session.get("student_name"),
+@@ -60,6 +108,7 @@ def chat():
+         response=result["response"],
+         intent=result["intent"],
+         confidence=result["confidence"],
++        conversation_id=conversation_id,
+     )
+ 
+     return jsonify(
+@@ -69,6 +118,8 @@ def chat():
+             "intent": result["intent"],
+             "confidence": result["confidence"],
+             "student_name": session.get("student_name"),
++            "conversation_id": conversation_id,
++            "is_new_conversation": is_new_conversation,
+         }
+     )
+ 
+@@ -113,10 +164,63 @@ def feedback():
+ 
+ @app.route("/api/reset", methods=["POST"])
+ def reset():
+-    session["session_id"] = str(uuid.uuid4())
++    """Start a new chat: clears the *active* conversation pointer only.
++
++    session_id (the durable per-browser identity) is intentionally never
++    rotated here — doing so would orphan all of this browser's existing
++    conversations from the sidebar. Nothing is deleted.
++    """
++    session["conversation_id"] = None
+     session["student_name"] = None
+     return jsonify({"status": "ok"})
+ 
+ 
++@app.route("/api/conversations")
++def conversations():
++    return jsonify(list_conversations(session["session_id"]))
++
++
++@app.route("/api/conversations/<conversation_id>")
++def conversation_detail(conversation_id):
++    conversation = get_conversation(conversation_id, session["session_id"])
++    if conversation is None:
++        return jsonify({"error": "conversation not found"}), 404
++
++    session["conversation_id"] = conversation_id
++    messages = get_conversation_messages(conversation_id, session["session_id"])
++    return jsonify({"conversation": conversation, "messages": messages})
++
++
++@app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
++def conversation_delete(conversation_id):
++    deleted = delete_conversation(conversation_id, session["session_id"])
++    if not deleted:
++        return jsonify({"error": "conversation not found"}), 404
++
++    if session.get("conversation_id") == conversation_id:
++        session["conversation_id"] = None
++
++    return jsonify({"status": "ok"})
++
++
++@app.route("/api/conversations/<conversation_id>/share", methods=["POST"])
++def conversation_share(conversation_id):
++    share_id = set_conversation_share(conversation_id, session["session_id"])
++    if share_id is None:
++        return jsonify({"error": "conversation not found"}), 404
++
++    return jsonify({"share_id": share_id, "share_url": f"/share/{share_id}"})
++
++
++@app.route("/share/<share_id>")
++def share_view(share_id):
++    conversation = get_conversation_by_share_id(share_id)
++    if conversation is None:
++        abort(404)
++
++    messages = get_share_messages(conversation["id"])
++    return render_template("share.html", title=conversation["title"], messages=messages)
++
++
+ if __name__ == "__main__":
+     app.run(debug=True, host="0.0.0.0", port=5000)
+diff --git a/chatbot/storage.py b/chatbot/storage.py
+index 9c11c7e..6231980 100644
+--- a/chatbot/storage.py
++++ b/chatbot/storage.py
+@@ -3,15 +3,24 @@
+ Keeps a record of every exchange (per browser session) so the demo can
+ show conversation history / a simple "personalised support" trail —
+ without requiring a full user auth system.
++
++Messages are grouped into named "conversations" (a ChatGPT-style sidebar
++concept). session_id remains the durable per-browser identity; a
++conversation just groups a subset of that session's chat_logs rows under
++a title, so the sidebar can list/switch/delete threads independently.
+ """
+ import os
++import secrets
+ import sqlite3
++import uuid
+ from contextlib import contextmanager
+ from datetime import datetime
+ 
+ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ DB_PATH = os.path.join(BASE_DIR, "chat_history.db")
+ 
++TITLE_MAX_LEN = 40
++
+ 
+ @contextmanager
+ def get_connection():
+@@ -52,16 +61,41 @@ def init_db():
+             )
+             """
+         )
++        conn.execute(
++            """
++            CREATE TABLE IF NOT EXISTS conversations (
++                id TEXT PRIMARY KEY,
++                session_id TEXT NOT NULL,
++                title TEXT NOT NULL,
++                share_id TEXT UNIQUE,
++                created_at TEXT NOT NULL,
++                updated_at TEXT NOT NULL
++            )
++            """
++        )
++
++        # Non-destructive migration: older databases (pre-sidebar feature)
++        # have chat_logs without conversation_id. Existing rows simply stay
++        # unattached to any conversation (they predate the concept).
++        existing_columns = {
++            row[1] for row in conn.execute("PRAGMA table_info(chat_logs)")
++        }
++        if "conversation_id" not in existing_columns:
++            conn.execute(
++                "ALTER TABLE chat_logs ADD COLUMN conversation_id TEXT "
++                "REFERENCES conversations(id)"
++            )
++
+         conn.commit()
+ 
+ 
+-def log_message(session_id, student_name, message, response, intent, confidence):
++def log_message(session_id, student_name, message, response, intent, confidence, conversation_id=None):
+     with get_connection() as conn:
+         cursor = conn.execute(
+             """
+             INSERT INTO chat_logs
+-                (session_id, student_name, message, response, intent, confidence, created_at)
+-            VALUES (?, ?, ?, ?, ?, ?, ?)
++                (session_id, student_name, message, response, intent, confidence, created_at, conversation_id)
++            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             """,
+             (
+                 session_id,
+@@ -71,6 +105,7 @@ def log_message(session_id, student_name, message, response, intent, confidence)
+                 intent,
+                 confidence,
+                 datetime.utcnow().isoformat(),
++                conversation_id,
+             ),
+         )
+         conn.commit()
+@@ -136,3 +171,171 @@ def log_feedback(chat_log_id, session_id, message, response, intent, rating):
+         )
+         conn.commit()
+         return cursor.rowcount > 0
++
++
++def generate_title(message):
++    """Derive a short sidebar title from the first message of a conversation."""
++    title = " ".join((message or "").split())
++    if not title:
++        return "New conversation"
++    if len(title) > TITLE_MAX_LEN:
++        title = title[:TITLE_MAX_LEN].rstrip() + "…"
++    return title[0].upper() + title[1:]
++
++
++def create_conversation(session_id, title):
++    conversation_id = uuid.uuid4().hex
++    now = datetime.utcnow().isoformat()
++    with get_connection() as conn:
++        conn.execute(
++            """
++            INSERT INTO conversations (id, session_id, title, created_at, updated_at)
++            VALUES (?, ?, ?, ?, ?)
++            """,
++            (conversation_id, session_id, title, now, now),
++        )
++        conn.commit()
++    return conversation_id
++
++
++def touch_conversation(conversation_id):
++    """Bump updated_at so recently-active conversations sort to the top."""
++    with get_connection() as conn:
++        conn.execute(
++            "UPDATE conversations SET updated_at = ? WHERE id = ?",
++            (datetime.utcnow().isoformat(), conversation_id),
++        )
++        conn.commit()
++
++
++def list_conversations(session_id):
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        rows = conn.execute(
++            """
++            SELECT id, title, created_at, updated_at
++            FROM conversations
++            WHERE session_id = ?
++            ORDER BY updated_at DESC
++            """,
++            (session_id,),
++        ).fetchall()
++        return [dict(row) for row in rows]
++
++
++def get_conversation(conversation_id, session_id):
++    """Fetch a conversation, scoped to the requesting session (ownership check)."""
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            """
++            SELECT id, title, share_id, created_at, updated_at
++            FROM conversations
++            WHERE id = ? AND session_id = ?
++            """,
++            (conversation_id, session_id),
++        ).fetchone()
++        return dict(row) if row else None
++
++
++def get_conversation_messages(conversation_id, session_id, limit=200):
++    """Fetch a conversation's turns, scoped to the requesting session."""
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        rows = conn.execute(
++            """
++            SELECT c.id, c.message, c.response, c.intent, c.confidence, c.created_at,
++                   f.rating AS feedback_rating
++            FROM chat_logs c
++            JOIN conversations conv ON conv.id = c.conversation_id
++            LEFT JOIN feedback f ON f.chat_log_id = c.id
++            WHERE c.conversation_id = ? AND conv.session_id = ?
++            ORDER BY c.id ASC
++            LIMIT ?
++            """,
++            (conversation_id, session_id, limit),
++        ).fetchall()
++        return [dict(row) for row in rows]
++
++
++def delete_conversation(conversation_id, session_id):
++    """Delete a conversation and its messages/feedback, scoped to the owner.
++
++    Returns True if a conversation was actually deleted.
++    """
++    with get_connection() as conn:
++        owned = conn.execute(
++            "SELECT 1 FROM conversations WHERE id = ? AND session_id = ?",
++            (conversation_id, session_id),
++        ).fetchone()
++        if not owned:
++            return False
++
++        conn.execute(
++            """
++            DELETE FROM feedback
++            WHERE chat_log_id IN (SELECT id FROM chat_logs WHERE conversation_id = ?)
++            """,
++            (conversation_id,),
++        )
++        conn.execute("DELETE FROM chat_logs WHERE conversation_id = ?", (conversation_id,))
++        conn.execute(
++            "DELETE FROM conversations WHERE id = ? AND session_id = ?",
++            (conversation_id, session_id),
++        )
++        conn.commit()
++        return True
++
++
++def set_conversation_share(conversation_id, session_id):
++    """Enable sharing for a conversation, returning its share_id.
++
++    Idempotent: re-sharing an already-shared conversation returns the
++    same share_id instead of rotating it.
++    """
++    conversation = get_conversation(conversation_id, session_id)
++    if conversation is None:
++        return None
++    if conversation["share_id"]:
++        return conversation["share_id"]
++
++    share_id = secrets.token_urlsafe(16)
++    with get_connection() as conn:
++        conn.execute(
++            "UPDATE conversations SET share_id = ? WHERE id = ? AND session_id = ?",
++            (share_id, conversation_id, session_id),
++        )
++        conn.commit()
++    return share_id
++
++
++def get_conversation_by_share_id(share_id):
++    """Public lookup for the read-only share view. No session/ownership check —
++    the share_id itself (an unguessable token) is the access credential.
++    Only non-sensitive fields are returned (no session_id).
++    """
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            "SELECT id, title FROM conversations WHERE share_id = ?",
++            (share_id,),
++        ).fetchone()
++        return dict(row) if row else None
++
++
++def get_share_messages(conversation_id):
++    """Read-only transcript for a shared conversation: message/response text
++    only — no intent, confidence, session_id, or internal row ids.
++    """
++    with get_connection() as conn:
++        conn.row_factory = sqlite3.Row
++        rows = conn.execute(
++            """
++            SELECT message, response
++            FROM chat_logs
++            WHERE conversation_id = ?
++            ORDER BY id ASC
++            """,
++            (conversation_id,),
++        ).fetchall()
++        return [dict(row) for row in rows]
+diff --git a/static/css/style.css b/static/css/style.css
+index 0df7599..166280b 100644
+--- a/static/css/style.css
++++ b/static/css/style.css
+@@ -26,27 +26,148 @@ body {
+   padding: 24px;
+ }
+ 
+-.app {
++.app-shell {
+   width: 100%;
+-  max-width: 720px;
++  max-width: 980px;
+   display: flex;
+-  flex-direction: column;
+-  background: var(--panel);
+   border-radius: 20px;
+   overflow: hidden;
+   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+   height: 90vh;
+ }
+ 
++.app {
++  flex: 1;
++  min-width: 0;
++  display: flex;
++  flex-direction: column;
++  background: var(--panel);
++}
++
++.sidebar {
++  width: 260px;
++  flex-shrink: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++  padding: 14px;
++  background: #0b1120;
++  border-right: 1px solid rgba(255, 255, 255, 0.06);
++  overflow-y: auto;
++}
++
++.new-chat-btn {
++  background: var(--panel-light);
++  color: var(--text);
++  border: 1px solid rgba(255, 255, 255, 0.12);
++  border-radius: 10px;
++  padding: 10px 12px;
++  font-size: 14px;
++  font-weight: 600;
++  text-align: left;
++  cursor: pointer;
++}
++
++.new-chat-btn:hover {
++  background: var(--accent);
++  border-color: var(--accent-light);
++}
++
++.conversation-list {
++  flex: 1;
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  overflow-y: auto;
++}
++
++.conversation-item {
++  display: flex;
++  align-items: center;
++  border-radius: 8px;
++}
++
++.conversation-item:hover {
++  background: rgba(255, 255, 255, 0.05);
++}
++
++.conversation-item.active {
++  background: var(--panel-light);
++}
++
++.conversation-open {
++  flex: 1;
++  min-width: 0;
++  background: none;
++  border: none;
++  color: var(--text);
++  text-align: left;
++  padding: 9px 10px;
++  font-size: 13px;
++  cursor: pointer;
++}
++
++.conversation-title {
++  display: block;
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++
++.conversation-delete {
++  background: none;
++  border: none;
++  color: var(--text-dim);
++  padding: 6px 10px;
++  font-size: 12px;
++  cursor: pointer;
++  opacity: 0;
++  transition: opacity 0.15s, color 0.15s;
++}
++
++.conversation-item:hover .conversation-delete,
++.conversation-item.active .conversation-delete {
++  opacity: 1;
++}
++
++.conversation-delete:hover {
++  color: #f87171;
++}
++
++.empty-history {
++  color: var(--text-dim);
++  font-size: 12px;
++  text-align: center;
++  padding: 16px 8px;
++}
++
++.sidebar-backdrop {
++  display: none;
++}
++
++.sidebar-toggle {
++  display: none;
++  background: rgba(255, 255, 255, 0.15);
++  border: 1px solid rgba(255, 255, 255, 0.3);
++  color: white;
++  border-radius: 8px;
++  padding: 6px 10px;
++  font-size: 16px;
++  cursor: pointer;
++  margin-right: 10px;
++}
++
+ .app-header {
+   display: flex;
+   align-items: center;
+-  justify-content: space-between;
++  gap: 10px;
+   padding: 18px 22px;
+   background: linear-gradient(90deg, var(--accent), var(--accent-light));
+ }
+ 
+ .brand {
++  flex: 1;
++  min-width: 0;
+   display: flex;
+   align-items: center;
+   gap: 12px;
+@@ -242,3 +363,177 @@ body {
+   font-size: 11px;
+   color: #f87171;
+ }
++
++.header-actions {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++}
++
++.header-btn {
++  background: rgba(255, 255, 255, 0.15);
++  border: 1px solid rgba(255, 255, 255, 0.3);
++  color: white;
++  padding: 8px 14px;
++  border-radius: 999px;
++  font-size: 13px;
++  cursor: pointer;
++}
++
++.header-btn:hover {
++  background: rgba(255, 255, 255, 0.25);
++}
++
++.profile-menu {
++  position: relative;
++}
++
++.profile-btn {
++  width: 34px;
++  height: 34px;
++  border-radius: 50%;
++  background: rgba(255, 255, 255, 0.2);
++  border: 1px solid rgba(255, 255, 255, 0.3);
++  color: white;
++  font-weight: 700;
++  font-size: 14px;
++  cursor: pointer;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++}
++
++.profile-btn:hover {
++  background: rgba(255, 255, 255, 0.3);
++}
++
++.profile-dropdown {
++  position: absolute;
++  top: calc(100% + 8px);
++  right: 0;
++  min-width: 190px;
++  background: var(--panel);
++  border: 1px solid rgba(255, 255, 255, 0.1);
++  border-radius: 12px;
++  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
++  padding: 8px;
++  z-index: 30;
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++}
++
++.profile-name {
++  padding: 8px 10px 10px;
++  margin-bottom: 4px;
++  font-size: 13px;
++  font-weight: 600;
++  color: var(--text);
++  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
++}
++
++.profile-item {
++  background: none;
++  border: none;
++  color: var(--text);
++  text-align: left;
++  padding: 8px 10px;
++  border-radius: 8px;
++  font-size: 13px;
++  cursor: pointer;
++}
++
++.profile-item:hover {
++  background: var(--panel-light);
++}
++
++.toast {
++  position: fixed;
++  left: 50%;
++  bottom: 28px;
++  transform: translateX(-50%);
++  background: #111827;
++  color: white;
++  padding: 10px 18px;
++  border-radius: 999px;
++  font-size: 13px;
++  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
++  z-index: 100;
++}
++
++.share-app {
++  max-width: 720px;
++  margin: 0 auto;
++  height: auto;
++  min-height: 70vh;
++}
++
++.share-footer {
++  padding: 12px 20px 18px;
++  text-align: center;
++  color: var(--text-dim);
++  font-size: 12px;
++}
++
++body.share-page {
++  align-items: flex-start;
++  padding-top: 40px;
++}
++
++@media (max-width: 768px) {
++  body {
++    padding: 0;
++  }
++
++  .app-shell {
++    max-width: 100%;
++    height: 100vh;
++    border-radius: 0;
++    box-shadow: none;
++  }
++
++  .sidebar-toggle {
++    display: inline-flex;
++    align-items: center;
++    justify-content: center;
++  }
++
++  .sidebar {
++    position: fixed;
++    top: 0;
++    bottom: 0;
++    left: 0;
++    width: 82vw;
++    max-width: 300px;
++    transform: translateX(-100%);
++    transition: transform 0.2s ease;
++    z-index: 25;
++  }
++
++  .sidebar.open {
++    transform: translateX(0);
++  }
++
++  .sidebar-backdrop:not([hidden]) {
++    display: block;
++    position: fixed;
++    inset: 0;
++    background: rgba(0, 0, 0, 0.5);
++    z-index: 20;
++  }
++}
++
++@media (max-width: 480px) {
++  .app-header p {
++    display: none;
++  }
++
++  .app-header h1 {
++    font-size: 16px;
++  }
++
++  .header-btn {
++    padding: 8px 10px;
++    font-size: 12px;
++  }
++}
+diff --git a/static/js/script.js b/static/js/script.js
+index 05feeb8..7c82a38 100644
+--- a/static/js/script.js
++++ b/static/js/script.js
+@@ -1,13 +1,35 @@
+ const chatWindow = document.getElementById("chat-window");
+ const chatForm = document.getElementById("chat-form");
+ const messageInput = document.getElementById("message-input");
+-const resetBtn = document.getElementById("reset-btn");
+ const suggestions = document.getElementById("suggestions");
+ 
++const sidebar = document.getElementById("sidebar");
++const sidebarToggle = document.getElementById("sidebar-toggle");
++const sidebarBackdrop = document.getElementById("sidebar-backdrop");
++const newChatBtn = document.getElementById("new-chat-btn");
++const conversationList = document.getElementById("conversation-list");
++const shareBtn = document.getElementById("share-btn");
++const profileBtn = document.getElementById("profile-btn");
++const profileDropdown = document.getElementById("profile-dropdown");
++const toast = document.getElementById("toast");
++
++let currentConversationId =
++  (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.conversationId) || null;
++let toastTimer = null;
++
+ function scrollToBottom() {
+   chatWindow.scrollTop = chatWindow.scrollHeight;
+ }
+ 
++function showToast(message) {
++  toast.textContent = message;
++  toast.hidden = false;
++  clearTimeout(toastTimer);
++  toastTimer = setTimeout(() => {
++    toast.hidden = true;
++  }, 2500);
++}
++
+ function createFeedbackElement(messageId, existingRating) {
+   const container = document.createElement("div");
+   container.className = "feedback";
+@@ -33,7 +55,7 @@ function createFeedbackElement(messageId, existingRating) {
+   return container;
+ }
+ 
+-function appendMessage(text, sender, meta, messageId) {
++function appendMessage(text, sender, meta, messageId, existingRating) {
+   const wrapper = document.createElement("div");
+   wrapper.className = `message ${sender}`;
+ 
+@@ -50,7 +72,7 @@ function appendMessage(text, sender, meta, messageId) {
+   }
+ 
+   if (sender === "bot" && messageId != null) {
+-    wrapper.appendChild(createFeedbackElement(messageId, null));
++    wrapper.appendChild(createFeedbackElement(messageId, existingRating || null));
+   }
+ 
+   chatWindow.appendChild(wrapper);
+@@ -58,6 +80,24 @@ function appendMessage(text, sender, meta, messageId) {
+   return wrapper;
+ }
+ 
++function renderTurn(turn) {
++  appendMessage(turn.message, "user");
++  appendMessage(
++    turn.response,
++    "bot",
++    `intent: ${turn.intent} · confidence: ${Number(turn.confidence).toFixed(2)}`,
++    turn.id,
++    turn.feedback_rating
++  );
++}
++
++function showWelcome() {
++  appendMessage(
++    "Hi! I'm your academic support assistant. Try asking me about exam schedules, assignment deadlines, attendance policy, or study tips.",
++    "bot"
++  );
++}
++
+ async function submitFeedback(container, rating) {
+   const messageId = Number(container.dataset.messageId);
+   const buttons = container.querySelectorAll(".feedback-btn");
+@@ -128,12 +168,16 @@ async function sendMessage(text) {
+       return;
+     }
+ 
++    currentConversationId = data.conversation_id;
++
+     appendMessage(
+       data.response,
+       "bot",
+       `intent: ${data.intent} · confidence: ${data.confidence.toFixed(2)}`,
+       data.message_id
+     );
++
++    loadConversations();
+   } catch (err) {
+     typingEl.remove();
+     appendMessage("Network error — is the Flask server running?", "bot");
+@@ -154,13 +198,216 @@ suggestions.addEventListener("click", (e) => {
+   }
+ });
+ 
+-resetBtn.addEventListener("click", async () => {
+-  await fetch("/api/reset", { method: "POST" });
++// --- Sidebar: conversation list ------------------------------------------
++
++function renderConversationList(items) {
++  conversationList.innerHTML = "";
++
++  if (!items.length) {
++    const empty = document.createElement("div");
++    empty.className = "empty-history";
++    empty.id = "empty-history";
++    empty.textContent = "No conversations yet — start chatting!";
++    conversationList.appendChild(empty);
++    return;
++  }
++
++  items.forEach((conv) => {
++    const item = document.createElement("div");
++    item.className = "conversation-item" + (conv.id === currentConversationId ? " active" : "");
++    item.dataset.conversationId = conv.id;
++
++    const openBtn = document.createElement("button");
++    openBtn.type = "button";
++    openBtn.className = "conversation-open";
++    openBtn.dataset.conversationId = conv.id;
++    const titleSpan = document.createElement("span");
++    titleSpan.className = "conversation-title";
++    titleSpan.textContent = conv.title;
++    openBtn.appendChild(titleSpan);
++
++    const delBtn = document.createElement("button");
++    delBtn.type = "button";
++    delBtn.className = "conversation-delete";
++    delBtn.dataset.conversationId = conv.id;
++    delBtn.setAttribute("aria-label", "Delete conversation");
++    delBtn.title = "Delete conversation";
++    delBtn.textContent = "🗑";
++
++    item.appendChild(openBtn);
++    item.appendChild(delBtn);
++    conversationList.appendChild(item);
++  });
++}
++
++function highlightActiveConversation() {
++  conversationList.querySelectorAll(".conversation-item").forEach((item) => {
++    item.classList.toggle("active", item.dataset.conversationId === currentConversationId);
++  });
++}
++
++async function loadConversations() {
++  try {
++    const res = await fetch("/api/conversations");
++    if (!res.ok) return;
++    renderConversationList(await res.json());
++  } catch (err) {
++    // Sidebar refresh is best-effort; a failure here shouldn't break chat.
++  }
++}
++
++async function openConversation(conversationId) {
++  try {
++    const res = await fetch(`/api/conversations/${conversationId}`);
++    const data = await res.json();
++
++    if (!res.ok || data.error) {
++      showToast(data.error || "Couldn't open that conversation.");
++      return;
++    }
++
++    currentConversationId = data.conversation.id;
++    chatWindow.innerHTML = "";
++    data.messages.forEach(renderTurn);
++    scrollToBottom();
++    highlightActiveConversation();
++    closeSidebarDrawer();
++  } catch (err) {
++    showToast("Network error — couldn't open that conversation.");
++  }
++}
++
++async function deleteConversationHandler(conversationId) {
++  if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
++
++  try {
++    const res = await fetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
++    const data = await res.json();
++
++    if (!res.ok || data.error) {
++      showToast(data.error || "Couldn't delete that conversation.");
++      return;
++    }
++
++    if (conversationId === currentConversationId) {
++      currentConversationId = null;
++      chatWindow.innerHTML = "";
++      showWelcome();
++    }
++
++    loadConversations();
++  } catch (err) {
++    showToast("Network error — couldn't delete that conversation.");
++  }
++}
++
++sidebar.addEventListener("click", (e) => {
++  const delBtn = e.target.closest(".conversation-delete");
++  if (delBtn) {
++    e.stopPropagation();
++    deleteConversationHandler(delBtn.dataset.conversationId);
++    return;
++  }
++
++  const openBtn = e.target.closest(".conversation-open");
++  if (openBtn) {
++    openConversation(openBtn.dataset.conversationId);
++  }
++});
++
++newChatBtn.addEventListener("click", async () => {
++  try {
++    await fetch("/api/reset", { method: "POST" });
++  } catch (err) {
++    // Fall through and clear the local view even if the request failed.
++  }
++  currentConversationId = null;
+   chatWindow.innerHTML = "";
+-  appendMessage(
+-    "Hi! I'm your academic support assistant. Try asking me about exam schedules, assignment deadlines, attendance policy, or study tips.",
+-    "bot"
+-  );
++  showWelcome();
++  highlightActiveConversation();
++  closeSidebarDrawer();
++});
++
++// --- Sidebar: mobile drawer -----------------------------------------------
++
++function openSidebarDrawer() {
++  sidebar.classList.add("open");
++  sidebarBackdrop.hidden = false;
++}
++
++function closeSidebarDrawer() {
++  sidebar.classList.remove("open");
++  sidebarBackdrop.hidden = true;
++}
++
++sidebarToggle.addEventListener("click", () => {
++  if (sidebar.classList.contains("open")) {
++    closeSidebarDrawer();
++  } else {
++    openSidebarDrawer();
++  }
++});
++
++sidebarBackdrop.addEventListener("click", closeSidebarDrawer);
++
++// --- Share ------------------------------------------------------------
++
++shareBtn.addEventListener("click", async () => {
++  if (!currentConversationId) {
++    showToast("Start a conversation first.");
++    return;
++  }
++
++  try {
++    const res = await fetch(`/api/conversations/${currentConversationId}/share`, {
++      method: "POST",
++    });
++    const data = await res.json();
++
++    if (!res.ok || data.error) {
++      showToast(data.error || "Couldn't create a share link.");
++      return;
++    }
++
++    const shareUrl = `${window.location.origin}${data.share_url}`;
++    try {
++      await navigator.clipboard.writeText(shareUrl);
++      showToast("Link copied!");
++    } catch (clipboardErr) {
++      window.prompt("Copy this link:", shareUrl);
++    }
++  } catch (err) {
++    showToast("Network error — couldn't create a share link.");
++  }
++});
++
++// --- Profile menu (UI only — no auth backend yet) --------------------------
++
++profileBtn.addEventListener("click", (e) => {
++  e.stopPropagation();
++  const isOpen = !profileDropdown.hidden;
++  profileDropdown.hidden = isOpen;
++  profileBtn.setAttribute("aria-expanded", String(!isOpen));
++});
++
++document.addEventListener("click", (e) => {
++  if (!profileDropdown.hidden && !e.target.closest(".profile-menu")) {
++    profileDropdown.hidden = true;
++    profileBtn.setAttribute("aria-expanded", "false");
++  }
++});
++
++document.addEventListener("keydown", (e) => {
++  if (e.key === "Escape" && !profileDropdown.hidden) {
++    profileDropdown.hidden = true;
++    profileBtn.setAttribute("aria-expanded", "false");
++  }
++});
++
++profileDropdown.querySelectorAll(".profile-item[data-placeholder]").forEach((btn) => {
++  btn.addEventListener("click", () => {
++    showToast("Coming soon — accounts aren't implemented yet.");
++  });
+ });
+ 
+ scrollToBottom();
+diff --git a/templates/index.html b/templates/index.html
+index 117a651..4a22e16 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -7,63 +7,106 @@
+   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+ </head>
+ <body>
+-  <div class="app">
+-    <header class="app-header">
+-      <div class="brand">
+-        <span class="brand-icon">🎓</span>
+-        <div>
+-          <h1>Academic Support Chatbot</h1>
+-          <p>Ask about courses, exams, assignments, attendance, or study tips</p>
+-        </div>
++  <div class="app-shell">
++    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
++
++    <aside class="sidebar" id="sidebar">
++      <button id="new-chat-btn" class="new-chat-btn">+ New chat</button>
++      <div class="conversation-list" id="conversation-list">
++        {% if conversations %}
++          {% for conv in conversations %}
++          <div class="conversation-item{{ ' active' if conv.id == current_conversation_id else '' }}" data-conversation-id="{{ conv.id }}">
++            <button type="button" class="conversation-open" data-conversation-id="{{ conv.id }}">
++              <span class="conversation-title">{{ conv.title }}</span>
++            </button>
++            <button type="button" class="conversation-delete" data-conversation-id="{{ conv.id }}" aria-label="Delete conversation" title="Delete conversation">🗑</button>
++          </div>
++          {% endfor %}
++        {% else %}
++          <div class="empty-history" id="empty-history">No conversations yet — start chatting!</div>
++        {% endif %}
+       </div>
+-      <button id="reset-btn" class="reset-btn" title="Start a new conversation">New chat</button>
+-    </header>
++    </aside>
+ 
+-    <main class="chat-window" id="chat-window">
+-      {% if not history %}
+-      <div class="message bot">
+-        <div class="bubble">
+-          Hi{{ ' ' + student_name if student_name else '' }}! I'm your academic support
+-          assistant. Try asking me about exam schedules, assignment deadlines,
+-          attendance policy, or study tips.
++    <div class="app">
++      <header class="app-header">
++        <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Toggle conversation list">☰</button>
++        <div class="brand">
++          <span class="brand-icon">🎓</span>
++          <div>
++            <h1>Academic Support Chatbot</h1>
++            <p>Ask about courses, exams, assignments, attendance, or study tips</p>
++          </div>
+         </div>
+-      </div>
+-      {% endif %}
+-      {% for turn in history %}
+-      <div class="message user">
+-        <div class="bubble">{{ turn.message }}</div>
+-      </div>
+-      <div class="message bot">
+-        <div class="bubble">{{ turn.response }}</div>
+-        <div class="meta">intent: {{ turn.intent }} · confidence: {{ "%.2f"|format(turn.confidence) }}</div>
+-        <div class="feedback" data-message-id="{{ turn.id }}">
+-          <button type="button" class="feedback-btn feedback-up{{ ' selected' if turn.feedback_rating == 'up' else '' }}" data-rating="up" aria-label="Helpful" {{ 'disabled' if turn.feedback_rating }}>👍</button>
+-          <button type="button" class="feedback-btn feedback-down{{ ' selected' if turn.feedback_rating == 'down' else '' }}" data-rating="down" aria-label="Not helpful" {{ 'disabled' if turn.feedback_rating }}>👎</button>
+-          <span class="feedback-thanks" {{ '' if turn.feedback_rating else 'hidden' }}>Thanks for your feedback!</span>
++        <div class="header-actions">
++          <button id="share-btn" class="header-btn" title="Share this conversation">Share</button>
++          <div class="profile-menu">
++            <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile menu">
++              {{ (student_name[0] if student_name else 'S')|upper }}
++            </button>
++            <div class="profile-dropdown" id="profile-dropdown" hidden>
++              <div class="profile-name">{{ student_name or 'Guest student' }}</div>
++              <button type="button" class="profile-item" data-placeholder="true">Profile</button>
++              <button type="button" class="profile-item" data-placeholder="true">Settings</button>
++              <button type="button" class="profile-item" data-placeholder="true">Logout</button>
++            </div>
++          </div>
++        </div>
++      </header>
++
++      <main class="chat-window" id="chat-window">
++        {% if not history %}
++        <div class="message bot">
++          <div class="bubble">
++            Hi{{ ' ' + student_name if student_name else '' }}! I'm your academic support
++            assistant. Try asking me about exam schedules, assignment deadlines,
++            attendance policy, or study tips.
++          </div>
+         </div>
++        {% endif %}
++        {% for turn in history %}
++        <div class="message user">
++          <div class="bubble">{{ turn.message }}</div>
++        </div>
++        <div class="message bot">
++          <div class="bubble">{{ turn.response }}</div>
++          <div class="meta">intent: {{ turn.intent }} · confidence: {{ "%.2f"|format(turn.confidence) }}</div>
++          <div class="feedback" data-message-id="{{ turn.id }}">
++            <button type="button" class="feedback-btn feedback-up{{ ' selected' if turn.feedback_rating == 'up' else '' }}" data-rating="up" aria-label="Helpful" {{ 'disabled' if turn.feedback_rating }}>👍</button>
++            <button type="button" class="feedback-btn feedback-down{{ ' selected' if turn.feedback_rating == 'down' else '' }}" data-rating="down" aria-label="Not helpful" {{ 'disabled' if turn.feedback_rating }}>👎</button>
++            <span class="feedback-thanks" {{ '' if turn.feedback_rating else 'hidden' }}>Thanks for your feedback!</span>
++          </div>
++        </div>
++        {% endfor %}
++      </main>
++
++      <div class="suggestions" id="suggestions">
++        <button class="chip">Exam schedule</button>
++        <button class="chip">Study tips</button>
++        <button class="chip">Attendance policy</button>
++        <button class="chip">Assignment help</button>
+       </div>
+-      {% endfor %}
+-    </main>
+ 
+-    <div class="suggestions" id="suggestions">
+-      <button class="chip">Exam schedule</button>
+-      <button class="chip">Study tips</button>
+-      <button class="chip">Attendance policy</button>
+-      <button class="chip">Assignment help</button>
++      <form id="chat-form" class="chat-form">
++        <input
++          id="message-input"
++          type="text"
++          autocomplete="off"
++          placeholder="Type your question here..."
++          required
++        />
++        <button type="submit">Send</button>
++      </form>
+     </div>
+-
+-    <form id="chat-form" class="chat-form">
+-      <input
+-        id="message-input"
+-        type="text"
+-        autocomplete="off"
+-        placeholder="Type your question here..."
+-        required
+-      />
+-      <button type="submit">Send</button>
+-    </form>
+   </div>
+ 
++  <div class="toast" id="toast" hidden></div>
++
++  <script>
++    window.__INITIAL_STATE__ = {
++      conversationId: {{ current_conversation_id|tojson }}
++    };
++  </script>
+   <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+ </body>
+ </html>
+diff --git a/templates/share.html b/templates/share.html
+new file mode 100644
+index 0000000..74fc293
+--- /dev/null
++++ b/templates/share.html
+@@ -0,0 +1,37 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>{{ title }} · Shared Conversation</title>
++  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
++</head>
++<body class="share-page">
++  <div class="app share-app">
++    <header class="app-header">
++      <div class="brand">
++        <span class="brand-icon">🎓</span>
++        <div>
++          <h1>{{ title }}</h1>
++          <p>Shared conversation · read-only</p>
++        </div>
++      </div>
++    </header>
++
++    <main class="chat-window">
++      {% for turn in messages %}
++      <div class="message user">
++        <div class="bubble">{{ turn.message }}</div>
++      </div>
++      <div class="message bot">
++        <div class="bubble">{{ turn.response }}</div>
++      </div>
++      {% endfor %}
++    </main>
++
++    <footer class="share-footer">
++      <p>Shared from AI Academic Support Chatbot</p>
++    </footer>
++  </div>
++</body>
++</html>
