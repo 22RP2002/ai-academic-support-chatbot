@@ -1,0 +1,839 @@
+diff --git a/app.py b/app.py
+index 17a130d..4e3e5f9 100644
+--- a/app.py
++++ b/app.py
+@@ -1,7 +1,9 @@
+-"""AI Academic Support Chatbot — Flask application.
++"""Study Workspace — Flask application.
+ 
+-Serves the chat UI and a small JSON API backed by a Scikit-learn /
+-NLTK intent-classification chatbot engine (see chatbot/engine.py).
++Serves the study-workspace chat UI and a small JSON API backed by a
++Scikit-learn / NLTK intent-classification chatbot engine (see
++chatbot/engine.py). Academic-admin topics (exams, attendance, etc.) remain
++answerable as a secondary capability; they are not the product's identity.
+ """
+ import os
+ import re
+@@ -28,7 +30,6 @@ from chatbot.storage import (
+     get_share_messages,
+     get_user_by_email,
+     get_user_by_id,
+-    get_user_by_username,
+     init_db,
+     list_conversations,
+     log_feedback,
+@@ -38,7 +39,8 @@ from chatbot.storage import (
+ )
+ 
+ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+-USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,30}$")
++NAME_MIN_LEN = 2
++NAME_MAX_LEN = 100
+ 
+ app = Flask(__name__)
+ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
+@@ -46,6 +48,13 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
+ # the cookie needs to outlive a single browser session (default Flask
+ # behaviour expires it when the browser closes).
+ app.permanent_session_lifetime = timedelta(days=365)
++app.config.update(
++    SESSION_COOKIE_HTTPONLY=True,  # JS can never read the session cookie
++    SESSION_COOKIE_SAMESITE="Lax",  # sent on top-level navigation, blocked cross-site
++    # Only require HTTPS for the cookie once actually deployed — enforcing
++    # it locally would silently break login over plain http://127.0.0.1.
++    SESSION_COOKIE_SECURE=os.environ.get("FLASK_ENV") == "production",
++)
+ 
+ init_db()
+ engine = ChatEngine()
+@@ -88,14 +97,14 @@ def signup_page():
+     if request.method == "GET":
+         return render_template("signup.html")
+ 
+-    username = (request.form.get("username") or "").strip().lower()
++    name = (request.form.get("name") or "").strip()
+     email = (request.form.get("email") or "").strip().lower()
+     password = request.form.get("password") or ""
+     confirm_password = request.form.get("confirm_password") or ""
+-    form_values = {"username": username, "email": email}
++    form_values = {"name": name, "email": email}
+ 
+-    if not USERNAME_RE.match(username):
+-        flash("Username must be 3-30 characters: letters, numbers, or underscore.", "error")
++    if not (NAME_MIN_LEN <= len(name) <= NAME_MAX_LEN):
++        flash(f"Full name must be {NAME_MIN_LEN}-{NAME_MAX_LEN} characters.", "error")
+         return render_template("signup.html", **form_values), 400
+     if not EMAIL_RE.match(email):
+         flash("Enter a valid email address.", "error")
+@@ -106,22 +115,19 @@ def signup_page():
+     if password != confirm_password:
+         flash("Passwords do not match.", "error")
+         return render_template("signup.html", **form_values), 400
+-    if get_user_by_username(username):
+-        flash("That username is already taken.", "error")
+-        return render_template("signup.html", **form_values), 400
+     if get_user_by_email(email):
+         flash("An account with that email already exists.", "error")
+         return render_template("signup.html", **form_values), 400
+ 
+     try:
+-        user = create_user(username, email, password)
++        user = create_user(name, email, password)
+     except DuplicateUserError:
+-        flash("That username or email is already in use.", "error")
++        flash("An account with that email already exists.", "error")
+         return render_template("signup.html", **form_values), 400
+ 
+     session.clear()
+     session["user_id"] = user["id"]
+-    flash(f"Welcome, {user['username']}! Your account was created.", "success")
++    flash(f"Welcome, {user['name']}! Your account was created.", "success")
+     return redirect(url_for("index"))
+ 
+ 
+@@ -144,7 +150,7 @@ def login_page():
+ 
+     session.clear()
+     session["user_id"] = user["id"]
+-    flash(f"Welcome back, {user['username']}!", "success")
++    flash(f"Welcome back, {user['name']}!", "success")
+     return redirect(next_url if next_url.startswith("/") else url_for("index"))
+ 
+ 
+diff --git a/chatbot/storage.py b/chatbot/storage.py
+index 96a8fc6..33a7b55 100644
+--- a/chatbot/storage.py
++++ b/chatbot/storage.py
+@@ -45,14 +45,50 @@ def get_connection():
+ 
+ def init_db():
+     with get_connection() as conn:
++        # Non-destructive migration: the users table originally used a
++        # unique `username`. Full-name signup replaces that with a
++        # non-unique `name` field, and adds `updated_at`. SQLite can't drop
++        # a UNIQUE constraint in place, so rebuild the table and copy every
++        # existing account across (old username becomes its display name;
++        # id/email/password_hash/created_at are preserved exactly, so
++        # existing accounts keep working with the same credentials).
++        existing_tables = {
++            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
++        }
++        if "users" in existing_tables:
++            user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
++            if "name" not in user_columns and "username" in user_columns:
++                conn.execute(
++                    """
++                    CREATE TABLE users_new (
++                        id TEXT PRIMARY KEY,
++                        name TEXT NOT NULL,
++                        email TEXT NOT NULL UNIQUE,
++                        password_hash TEXT NOT NULL,
++                        created_at TEXT NOT NULL,
++                        updated_at TEXT NOT NULL
++                    )
++                    """
++                )
++                conn.execute(
++                    """
++                    INSERT INTO users_new (id, name, email, password_hash, created_at, updated_at)
++                    SELECT id, username, email, password_hash, created_at, created_at
++                    FROM users
++                    """
++                )
++                conn.execute("DROP TABLE users")
++                conn.execute("ALTER TABLE users_new RENAME TO users")
++
+         conn.execute(
+             """
+             CREATE TABLE IF NOT EXISTS users (
+                 id TEXT PRIMARY KEY,
+-                username TEXT NOT NULL UNIQUE,
++                name TEXT NOT NULL,
+                 email TEXT NOT NULL UNIQUE,
+                 password_hash TEXT NOT NULL,
+-                created_at TEXT NOT NULL
++                created_at TEXT NOT NULL,
++                updated_at TEXT NOT NULL
+             )
+             """
+         )
+@@ -210,11 +246,11 @@ def log_feedback(chat_log_id, session_id, message, response, intent, rating):
+         return cursor.rowcount > 0
+ 
+ 
+-def create_user(username, email, password):
++def create_user(name, email, password):
+     """Create a new account with a securely hashed password.
+ 
+-    Raises DuplicateUserError if the username or email is already taken
+-    (also guards the race between the pre-check in app.py and this insert).
++    Raises DuplicateUserError if the email is already registered (also
++    guards the race between the pre-check in app.py and this insert).
+     """
+     user_id = uuid.uuid4().hex
+     now = datetime.utcnow().isoformat()
+@@ -223,15 +259,15 @@ def create_user(username, email, password):
+         try:
+             conn.execute(
+                 """
+-                INSERT INTO users (id, username, email, password_hash, created_at)
+-                VALUES (?, ?, ?, ?, ?)
++                INSERT INTO users (id, name, email, password_hash, created_at, updated_at)
++                VALUES (?, ?, ?, ?, ?, ?)
+                 """,
+-                (user_id, username, email, password_hash, now),
++                (user_id, name, email, password_hash, now, now),
+             )
+             conn.commit()
+         except sqlite3.IntegrityError as exc:
+-            raise DuplicateUserError("username or email already in use") from exc
+-    return {"id": user_id, "username": username, "email": email, "created_at": now}
++            raise DuplicateUserError("email already in use") from exc
++    return {"id": user_id, "name": name, "email": email, "created_at": now, "updated_at": now}
+ 
+ 
+ def get_user_by_email(email):
+@@ -239,28 +275,18 @@ def get_user_by_email(email):
+     with get_connection() as conn:
+         conn.row_factory = sqlite3.Row
+         row = conn.execute(
+-            "SELECT id, username, email, password_hash, created_at FROM users WHERE email = ?",
++            "SELECT id, name, email, password_hash, created_at, updated_at FROM users WHERE email = ?",
+             (email,),
+         ).fetchone()
+         return dict(row) if row else None
+ 
+ 
+-def get_user_by_username(username):
+-    with get_connection() as conn:
+-        conn.row_factory = sqlite3.Row
+-        row = conn.execute(
+-            "SELECT id, username, email, created_at FROM users WHERE username = ?",
+-            (username,),
+-        ).fetchone()
+-        return dict(row) if row else None
+-
+-
+ def get_user_by_id(user_id):
+     """Public profile fields only — never returns password_hash."""
+     with get_connection() as conn:
+         conn.row_factory = sqlite3.Row
+         row = conn.execute(
+-            "SELECT id, username, email, created_at FROM users WHERE id = ?",
++            "SELECT id, name, email, created_at, updated_at FROM users WHERE id = ?",
+             (user_id,),
+         ).fetchone()
+         return dict(row) if row else None
+diff --git a/data/intents.json b/data/intents.json
+index 50c98f6..006166b 100644
+--- a/data/intents.json
++++ b/data/intents.json
+@@ -7,9 +7,9 @@
+         "Hi there", "Hey bot", "Is anyone there?", "Yo", "Hiya", "What's up", "Sup"
+       ],
+       "responses": [
+-        "Hello{name}! I'm your academic support assistant. How can I help you today?",
+-        "Hi{name}! Ready to help with your studies. What do you need?",
+-        "Hey{name}! Ask me about your courses, exams, assignments, or study tips."
++        "Hello{name}! I'm here to help you study. What are you working on today?",
++        "Hi{name}! Ready to dig into a topic, or looking for study tips?",
++        "Hey{name}! Ask me a question, or tell me what you're trying to learn."
+       ]
+     },
+     {
+@@ -43,8 +43,8 @@
+         "Are you a bot", "Are you human", "What is this"
+       ],
+       "responses": [
+-        "I'm an AI Academic Support Chatbot built with Flask, NLTK, and Scikit-learn. I help students with course info, exams, assignments, and study guidance.",
+-        "I'm your virtual academic assistant, designed to answer common student queries instantly."
++        "I'm your AI study assistant — here to help you understand topics, revise, and stay motivated while you study.",
++        "I'm a study workspace assistant, built to answer questions and support you through your learning, not just exam season."
+       ]
+     },
+     {
+@@ -54,8 +54,8 @@
+         "What can you help with", "List your features", "What kind of questions can I ask"
+       ],
+       "responses": [
+-        "I can help with: course & syllabus info, exam schedules, assignment deadlines, attendance policy, grading, library info, study tips, time management, stress management, scholarships, fees, hostel info, placements, and faculty contacts.",
+-        "Ask me about exams, assignments, attendance, grades, study tips, or campus facilities and I'll do my best to help{name}!"
++        "Right now I can help with study tips, time management, staying motivated, and handling exam stress — plus general academic questions like exams, assignments, or attendance. Soon you'll be able to upload your own notes and PDFs so I can help you study from your own material.",
++        "Ask me for study tips, help managing your time, or a motivation boost — I'll do my best to help{name}! Uploading your own study material is coming soon."
+       ]
+     },
+     {
+@@ -324,9 +324,9 @@
+       "tag": "noanswer",
+       "patterns": [],
+       "responses": [
+-        "I'm not sure I understand{name}. Could you rephrase that, or ask about courses, exams, assignments, attendance, or study tips?",
+-        "Sorry{name}, I don't have an answer for that yet. Try asking about exams, assignments, timetable, or study tips.",
+-        "Hmm, I couldn't quite get that. You can ask me about academics, exams, library, or student life."
++        "I'm not sure I understand{name}. Could you rephrase that, or try asking for study tips, time management help, or a motivation boost?",
++        "Sorry{name}, I don't have an answer for that yet. I can currently help most with study tips, exams, and assignments — try rephrasing your question.",
++        "Hmm, I couldn't quite get that. Uploading your own notes for me to study from is coming soon — for now, try asking about study techniques or academic topics."
+       ]
+     }
+   ]
+diff --git a/static/css/style.css b/static/css/style.css
+index 1afb827..87deda9 100644
+--- a/static/css/style.css
++++ b/static/css/style.css
+@@ -23,17 +23,19 @@ body {
+   min-height: 100vh;
+   display: flex;
+   justify-content: center;
++  align-items: center;
+   padding: 24px;
+ }
+ 
+ .app-shell {
+   width: 100%;
+-  max-width: 980px;
++  max-width: 1200px;
+   display: flex;
+   border-radius: 20px;
+   overflow: hidden;
+   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+-  height: 90vh;
++  height: 85vh;
++  max-height: 900px;
+ }
+ 
+ .app {
+@@ -141,6 +143,48 @@ body {
+   padding: 16px 8px;
+ }
+ 
++.sidebar-section-label {
++  font-size: 11px;
++  font-weight: 600;
++  letter-spacing: 0.04em;
++  text-transform: uppercase;
++  color: var(--text-dim);
++  padding: 4px 10px;
++}
++
++.sidebar-placeholder-item {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++  background: none;
++  border: 1px dashed rgba(255, 255, 255, 0.12);
++  border-radius: 8px;
++  color: var(--text-dim);
++  text-align: left;
++  padding: 9px 10px;
++  font-size: 13px;
++  font-family: inherit;
++  cursor: pointer;
++}
++
++.sidebar-placeholder-item:hover {
++  border-color: rgba(255, 255, 255, 0.25);
++  color: var(--text);
++}
++
++.soon-badge {
++  flex-shrink: 0;
++  background: rgba(99, 102, 241, 0.18);
++  color: var(--accent-light);
++  border-radius: 999px;
++  padding: 2px 8px;
++  font-size: 10px;
++  font-weight: 600;
++  letter-spacing: 0.03em;
++  text-transform: uppercase;
++}
++
+ .sidebar-backdrop {
+   display: none;
+ }
+@@ -211,10 +255,62 @@ body {
+   gap: 12px;
+ }
+ 
++.empty-state {
++  margin: auto;
++  max-width: 420px;
++  text-align: center;
++  padding: 32px 20px;
++  color: var(--text);
++}
++
++.empty-state-icon {
++  font-size: 40px;
++  margin-bottom: 12px;
++}
++
++.empty-state h2 {
++  margin: 0 0 8px;
++  font-size: 20px;
++  font-weight: 600;
++}
++
++.empty-state > p {
++  margin: 0 0 24px;
++  color: var(--text-dim);
++  font-size: 14px;
++  line-height: 1.5;
++}
++
++.empty-state-features {
++  list-style: none;
++  margin: 0;
++  padding: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++  text-align: left;
++}
++
++.empty-state-features li {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  background: rgba(255, 255, 255, 0.03);
++  border: 1px solid rgba(255, 255, 255, 0.06);
++  border-radius: 10px;
++  padding: 10px 14px;
++  font-size: 13px;
++  color: var(--text-dim);
++}
++
++.feature-icon {
++  font-size: 15px;
++}
++
+ .message {
+   display: flex;
+   flex-direction: column;
+-  max-width: 80%;
++  max-width: min(80%, 620px);
+ }
+ 
+ .message.user {
+@@ -283,6 +379,22 @@ body {
+   background: var(--panel);
+ }
+ 
++.attach-btn {
++  flex-shrink: 0;
++  width: 42px;
++  background: var(--panel-light);
++  color: var(--text-dim);
++  border: 1px solid rgba(255, 255, 255, 0.08);
++  border-radius: 999px;
++  font-size: 16px;
++  cursor: pointer;
++}
++
++.attach-btn:hover {
++  color: var(--text);
++  border-color: rgba(255, 255, 255, 0.2);
++}
++
+ .chat-form input {
+   flex: 1;
+   padding: 12px 14px;
+@@ -423,6 +535,10 @@ body {
+   gap: 2px;
+ }
+ 
++.profile-dropdown[hidden] {
++  display: none;
++}
++
+ .profile-name {
+   padding: 8px 10px 10px;
+   margin-bottom: 4px;
+@@ -489,6 +605,17 @@ body.share-page {
+   padding-top: 40px;
+ }
+ 
++@media (max-width: 1100px) and (min-width: 769px) {
++  body {
++    padding: 16px;
++  }
++
++  .app-shell {
++    height: 88vh;
++    max-height: none;
++  }
++}
++
+ @media (max-width: 768px) {
+   body {
+     padding: 0;
+@@ -497,6 +624,7 @@ body.share-page {
+   .app-shell {
+     max-width: 100%;
+     height: 100vh;
++    max-height: none;
+     border-radius: 0;
+     box-shadow: none;
+   }
+@@ -682,11 +810,15 @@ body.auth-page {
+   gap: 10px;
+ }
+ 
++.auth-actions > .header-btn,
+ .auth-actions form {
+-  margin: 0;
+   flex: 1;
+ }
+ 
++.auth-actions form {
++  margin: 0;
++}
++
+ .auth-actions .header-btn {
+   display: block;
+   width: 100%;
+diff --git a/static/favicon.svg b/static/favicon.svg
+new file mode 100644
+index 0000000..2bbd4a6
+--- /dev/null
++++ b/static/favicon.svg
+@@ -0,0 +1,3 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
++  <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" font-size="80">📚</text>
++</svg>
+diff --git a/static/js/script.js b/static/js/script.js
+index b90329a..e190320 100644
+--- a/static/js/script.js
++++ b/static/js/script.js
+@@ -12,6 +12,8 @@ const shareBtn = document.getElementById("share-btn");
+ const profileBtn = document.getElementById("profile-btn");
+ const profileDropdown = document.getElementById("profile-dropdown");
+ const toast = document.getElementById("toast");
++const attachFileBtn = document.getElementById("attach-file-btn");
++const studyMaterialsBtn = document.getElementById("study-materials-btn");
+ 
+ let currentConversationId =
+   (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.conversationId) || null;
+@@ -103,11 +105,25 @@ function renderTurn(turn) {
+   );
+ }
+ 
+-function showWelcome() {
+-  appendMessage(
+-    "Hi! I'm your academic support assistant. Try asking me about exam schedules, assignment deadlines, attendance policy, or study tips.",
+-    "bot"
+-  );
++// Mirrors the server-rendered empty state in templates/index.html so
++// "New Chat" and deleting the active conversation look identical to a
++// fresh page load.
++function renderEmptyState() {
++  const wrapper = document.createElement("div");
++  wrapper.className = "empty-state";
++  wrapper.id = "empty-state";
++  wrapper.innerHTML = `
++    <div class="empty-state-icon">📚</div>
++    <h2>How can I help you study today?</h2>
++    <p>Ask a question, work through a tricky topic, or get a quick explanation.</p>
++    <ul class="empty-state-features">
++      <li><span class="feature-icon">💬</span> Ask questions on any topic</li>
++      <li><span class="feature-icon">📝</span> Get clear explanations and summaries</li>
++      <li><span class="feature-icon">🎯</span> Practice and revise what you've learned</li>
++      <li><span class="feature-icon">📎</span> Upload your notes <span class="soon-badge">Soon</span></li>
++    </ul>
++  `;
++  chatWindow.appendChild(wrapper);
+ }
+ 
+ async function submitFeedback(container, rating) {
+@@ -204,10 +220,24 @@ chatForm.addEventListener("submit", (e) => {
+   sendMessage(text);
+ });
+ 
++// Quick-action chips are prompt starters, not auto-sent canned queries:
++// they fill the input with an editable template and let the student
++// finish and send it themselves. This avoids implying the chatbot can
++// already summarize/quiz from material it doesn't have (no upload yet).
+ suggestions.addEventListener("click", (e) => {
+-  if (e.target.classList.contains("chip")) {
+-    sendMessage(e.target.textContent);
+-  }
++  const chip = e.target.closest(".chip");
++  if (!chip) return;
++  messageInput.value = chip.dataset.prompt || "";
++  messageInput.focus();
++  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
++});
++
++attachFileBtn.addEventListener("click", () => {
++  showToast("File upload is coming soon — you'll be able to add your own notes and PDFs here.");
++});
++
++studyMaterialsBtn.addEventListener("click", () => {
++  showToast("Study materials are coming soon.");
+ });
+ 
+ // --- Sidebar: conversation list ------------------------------------------
+@@ -304,7 +334,7 @@ async function deleteConversationHandler(conversationId) {
+     if (conversationId === currentConversationId) {
+       currentConversationId = null;
+       chatWindow.innerHTML = "";
+-      showWelcome();
++      renderEmptyState();
+     }
+ 
+     loadConversations();
+@@ -335,7 +365,7 @@ newChatBtn.addEventListener("click", async () => {
+   }
+   currentConversationId = null;
+   chatWindow.innerHTML = "";
+-  showWelcome();
++  renderEmptyState();
+   highlightActiveConversation();
+   closeSidebarDrawer();
+ });
+diff --git a/templates/index.html b/templates/index.html
+index ced0f12..3434b64 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -3,7 +3,8 @@
+ <head>
+   <meta charset="UTF-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-  <title>AI Academic Support Chatbot</title>
++  <title>Study Workspace</title>
++  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+ </head>
+ <body>
+@@ -12,6 +13,8 @@
+ 
+     <aside class="sidebar" id="sidebar">
+       <button id="new-chat-btn" class="new-chat-btn">+ New chat</button>
++
++      <div class="sidebar-section-label">Chats</div>
+       <div class="conversation-list" id="conversation-list">
+         {% if conversations %}
+           {% for conv in conversations %}
+@@ -23,29 +26,35 @@
+           </div>
+           {% endfor %}
+         {% else %}
+-          <div class="empty-history" id="empty-history">No conversations yet — start chatting!</div>
++          <div class="empty-history" id="empty-history">No chats yet — start studying!</div>
+         {% endif %}
+       </div>
++
++      <div class="sidebar-section-label">Study materials</div>
++      <button type="button" id="study-materials-btn" class="sidebar-placeholder-item">
++        <span>📎 Upload notes &amp; PDFs</span>
++        <span class="soon-badge">Soon</span>
++      </button>
+     </aside>
+ 
+     <div class="app">
+       <header class="app-header">
+         <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Toggle conversation list">☰</button>
+         <div class="brand">
+-          <span class="brand-icon">🎓</span>
++          <span class="brand-icon">📚</span>
+           <div>
+-            <h1>Academic Support Chatbot</h1>
+-            <p>Ask about courses, exams, assignments, attendance, or study tips</p>
++            <h1>Study Workspace</h1>
++            <p>Ask questions, get explanations, and study smarter — powered by AI</p>
+           </div>
+         </div>
+         <div class="header-actions">
+           <button id="share-btn" class="header-btn" title="Share this conversation">Share</button>
+           <div class="profile-menu">
+             <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile menu">
+-              {{ current_user.username[0]|upper }}
++              {{ current_user.name[0]|upper }}
+             </button>
+             <div class="profile-dropdown" id="profile-dropdown" hidden>
+-              <div class="profile-name">{{ current_user.username }}</div>
++              <div class="profile-name">{{ current_user.name }}</div>
+               <a class="profile-item" href="{{ url_for('profile_page') }}">Profile</a>
+               <a class="profile-item" href="{{ url_for('profile_page') }}">Settings</a>
+               <form method="post" action="{{ url_for('logout_page') }}">
+@@ -58,12 +67,16 @@
+ 
+       <main class="chat-window" id="chat-window">
+         {% if not history %}
+-        <div class="message bot">
+-          <div class="bubble">
+-            Hi{{ ' ' + student_name if student_name else '' }}! I'm your academic support
+-            assistant. Try asking me about exam schedules, assignment deadlines,
+-            attendance policy, or study tips.
+-          </div>
++        <div class="empty-state" id="empty-state">
++          <div class="empty-state-icon">📚</div>
++          <h2>How can I help you study today{{ ', ' + student_name if student_name else '' }}?</h2>
++          <p>Ask a question, work through a tricky topic, or get a quick explanation.</p>
++          <ul class="empty-state-features">
++            <li><span class="feature-icon">💬</span> Ask questions on any topic</li>
++            <li><span class="feature-icon">📝</span> Get clear explanations and summaries</li>
++            <li><span class="feature-icon">🎯</span> Practice and revise what you've learned</li>
++            <li><span class="feature-icon">📎</span> Upload your notes <span class="soon-badge">Soon</span></li>
++          </ul>
+         </div>
+         {% endif %}
+         {% for turn in history %}
+@@ -83,18 +96,19 @@
+       </main>
+ 
+       <div class="suggestions" id="suggestions">
+-        <button class="chip">Exam schedule</button>
+-        <button class="chip">Study tips</button>
+-        <button class="chip">Attendance policy</button>
+-        <button class="chip">Assignment help</button>
++        <button type="button" class="chip" data-prompt="Explain this topic in simple terms: ">Explain a topic</button>
++        <button type="button" class="chip" data-prompt="Summarize this topic for me: ">Summarize a topic</button>
++        <button type="button" class="chip" data-prompt="Give me revision notes on: ">Revision notes</button>
++        <button type="button" class="chip" data-prompt="Give me some study tips for ">Study tips</button>
+       </div>
+ 
+       <form id="chat-form" class="chat-form">
++        <button type="button" id="attach-file-btn" class="attach-btn" title="Attach a file (coming soon)" aria-label="Attach a file (coming soon)">📎</button>
+         <input
+           id="message-input"
+           type="text"
+           autocomplete="off"
+-          placeholder="Type your question here..."
++          placeholder="Ask a question or describe what you want to study..."
+           required
+         />
+         <button type="submit">Send</button>
+diff --git a/templates/login.html b/templates/login.html
+index 26a7016..611ba0a 100644
+--- a/templates/login.html
++++ b/templates/login.html
+@@ -3,16 +3,17 @@
+ <head>
+   <meta charset="UTF-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-  <title>Log in · AI Academic Support Chatbot</title>
++  <title>Log in · Study Workspace</title>
++  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+ </head>
+ <body class="auth-page">
+   <div class="auth-card">
+     <div class="brand auth-brand">
+-      <span class="brand-icon">🎓</span>
++      <span class="brand-icon">📚</span>
+       <div>
+-        <h1>Academic Support Chatbot</h1>
+-        <p>Log in to continue your conversations</p>
++        <h1>Study Workspace</h1>
++        <p>Log in to continue studying</p>
+       </div>
+     </div>
+ 
+diff --git a/templates/profile.html b/templates/profile.html
+index a32415c..55b4934 100644
+--- a/templates/profile.html
++++ b/templates/profile.html
+@@ -3,13 +3,14 @@
+ <head>
+   <meta charset="UTF-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-  <title>Profile · AI Academic Support Chatbot</title>
++  <title>Profile · Study Workspace</title>
++  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+ </head>
+ <body class="auth-page">
+   <div class="auth-card">
+     <div class="brand auth-brand">
+-      <span class="brand-icon">🎓</span>
++      <span class="brand-icon">📚</span>
+       <div>
+         <h1>Profile &amp; settings</h1>
+         <p>Your account details</p>
+@@ -27,8 +28,8 @@
+     {% endwith %}
+ 
+     <dl class="profile-fields">
+-      <dt>Username</dt>
+-      <dd>{{ user.username }}</dd>
++      <dt>Full name</dt>
++      <dd>{{ user.name }}</dd>
+       <dt>Email</dt>
+       <dd>{{ user.email }}</dd>
+       <dt>Member since</dt>
+diff --git a/templates/share.html b/templates/share.html
+index 74fc293..c3f220e 100644
+--- a/templates/share.html
++++ b/templates/share.html
+@@ -3,17 +3,18 @@
+ <head>
+   <meta charset="UTF-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-  <title>{{ title }} · Shared Conversation</title>
++  <title>{{ title }} · Shared Study Session</title>
++  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+ </head>
+ <body class="share-page">
+   <div class="app share-app">
+     <header class="app-header">
+       <div class="brand">
+-        <span class="brand-icon">🎓</span>
++        <span class="brand-icon">📚</span>
+         <div>
+           <h1>{{ title }}</h1>
+-          <p>Shared conversation · read-only</p>
++          <p>Shared study session · read-only</p>
+         </div>
+       </div>
+     </header>
+@@ -30,7 +31,7 @@
+     </main>
+ 
+     <footer class="share-footer">
+-      <p>Shared from AI Academic Support Chatbot</p>
++      <p>Shared from Study Workspace</p>
+     </footer>
+   </div>
+ </body>
+diff --git a/templates/signup.html b/templates/signup.html
+index b1ad8e5..a5e4937 100644
+--- a/templates/signup.html
++++ b/templates/signup.html
+@@ -3,16 +3,17 @@
+ <head>
+   <meta charset="UTF-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-  <title>Sign up · AI Academic Support Chatbot</title>
++  <title>Sign up · Study Workspace</title>
++  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+ </head>
+ <body class="auth-page">
+   <div class="auth-card">
+     <div class="brand auth-brand">
+-      <span class="brand-icon">🎓</span>
++      <span class="brand-icon">📚</span>
+       <div>
+-        <h1>Academic Support Chatbot</h1>
+-        <p>Create an account to save your conversations</p>
++        <h1>Study Workspace</h1>
++        <p>Create your account and start studying smarter</p>
+       </div>
+     </div>
+ 
+@@ -27,9 +28,9 @@
+     {% endwith %}
+ 
+     <form method="post" action="{{ url_for('signup_page') }}" class="auth-form">
+-      <label for="username">Username</label>
+-      <input id="username" name="username" type="text" autocomplete="username" required
+-             minlength="3" maxlength="30" value="{{ username or '' }}" />
++      <label for="name">Full name</label>
++      <input id="name" name="name" type="text" autocomplete="name" required
++             minlength="2" maxlength="100" value="{{ name or '' }}" />
+ 
+       <label for="email">Email</label>
+       <input id="email" name="email" type="email" autocomplete="email" required value="{{ email or '' }}" />
