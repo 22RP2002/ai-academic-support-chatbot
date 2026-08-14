@@ -7,63 +7,106 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 </head>
 <body>
-  <div class="app">
-    <header class="app-header">
-      <div class="brand">
-        <span class="brand-icon">🎓</span>
-        <div>
-          <h1>Academic Support Chatbot</h1>
-          <p>Ask about courses, exams, assignments, attendance, or study tips</p>
-        </div>
-      </div>
-      <button id="reset-btn" class="reset-btn" title="Start a new conversation">New chat</button>
-    </header>
+  <div class="app-shell">
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
 
-    <main class="chat-window" id="chat-window">
-      {% if not history %}
-      <div class="message bot">
-        <div class="bubble">
-          Hi{{ ' ' + student_name if student_name else '' }}! I'm your academic support
-          assistant. Try asking me about exam schedules, assignment deadlines,
-          attendance policy, or study tips.
-        </div>
+    <aside class="sidebar" id="sidebar">
+      <button id="new-chat-btn" class="new-chat-btn">+ New chat</button>
+      <div class="conversation-list" id="conversation-list">
+        {% if conversations %}
+          {% for conv in conversations %}
+          <div class="conversation-item{{ ' active' if conv.id == current_conversation_id else '' }}" data-conversation-id="{{ conv.id }}">
+            <button type="button" class="conversation-open" data-conversation-id="{{ conv.id }}">
+              <span class="conversation-title">{{ conv.title }}</span>
+            </button>
+            <button type="button" class="conversation-delete" data-conversation-id="{{ conv.id }}" aria-label="Delete conversation" title="Delete conversation">🗑</button>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="empty-history" id="empty-history">No conversations yet — start chatting!</div>
+        {% endif %}
       </div>
-      {% endif %}
-      {% for turn in history %}
-      <div class="message user">
-        <div class="bubble">{{ turn.message }}</div>
-      </div>
-      <div class="message bot">
-        <div class="bubble">{{ turn.response }}</div>
-        <div class="meta">intent: {{ turn.intent }} · confidence: {{ "%.2f"|format(turn.confidence) }}</div>
-        <div class="feedback" data-message-id="{{ turn.id }}">
-          <button type="button" class="feedback-btn feedback-up{{ ' selected' if turn.feedback_rating == 'up' else '' }}" data-rating="up" aria-label="Helpful" {{ 'disabled' if turn.feedback_rating }}>👍</button>
-          <button type="button" class="feedback-btn feedback-down{{ ' selected' if turn.feedback_rating == 'down' else '' }}" data-rating="down" aria-label="Not helpful" {{ 'disabled' if turn.feedback_rating }}>👎</button>
-          <span class="feedback-thanks" {{ '' if turn.feedback_rating else 'hidden' }}>Thanks for your feedback!</span>
-        </div>
-      </div>
-      {% endfor %}
-    </main>
+    </aside>
 
-    <div class="suggestions" id="suggestions">
-      <button class="chip">Exam schedule</button>
-      <button class="chip">Study tips</button>
-      <button class="chip">Attendance policy</button>
-      <button class="chip">Assignment help</button>
+    <div class="app">
+      <header class="app-header">
+        <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Toggle conversation list">☰</button>
+        <div class="brand">
+          <span class="brand-icon">🎓</span>
+          <div>
+            <h1>Academic Support Chatbot</h1>
+            <p>Ask about courses, exams, assignments, attendance, or study tips</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="share-btn" class="header-btn" title="Share this conversation">Share</button>
+          <div class="profile-menu">
+            <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile menu">
+              {{ (student_name[0] if student_name else 'S')|upper }}
+            </button>
+            <div class="profile-dropdown" id="profile-dropdown" hidden>
+              <div class="profile-name">{{ student_name or 'Guest student' }}</div>
+              <button type="button" class="profile-item" data-placeholder="true">Profile</button>
+              <button type="button" class="profile-item" data-placeholder="true">Settings</button>
+              <button type="button" class="profile-item" data-placeholder="true">Logout</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="chat-window" id="chat-window">
+        {% if not history %}
+        <div class="message bot">
+          <div class="bubble">
+            Hi{{ ' ' + student_name if student_name else '' }}! I'm your academic support
+            assistant. Try asking me about exam schedules, assignment deadlines,
+            attendance policy, or study tips.
+          </div>
+        </div>
+        {% endif %}
+        {% for turn in history %}
+        <div class="message user">
+          <div class="bubble">{{ turn.message }}</div>
+        </div>
+        <div class="message bot">
+          <div class="bubble">{{ turn.response }}</div>
+          <div class="meta">intent: {{ turn.intent }} · confidence: {{ "%.2f"|format(turn.confidence) }}</div>
+          <div class="feedback" data-message-id="{{ turn.id }}">
+            <button type="button" class="feedback-btn feedback-up{{ ' selected' if turn.feedback_rating == 'up' else '' }}" data-rating="up" aria-label="Helpful" {{ 'disabled' if turn.feedback_rating }}>👍</button>
+            <button type="button" class="feedback-btn feedback-down{{ ' selected' if turn.feedback_rating == 'down' else '' }}" data-rating="down" aria-label="Not helpful" {{ 'disabled' if turn.feedback_rating }}>👎</button>
+            <span class="feedback-thanks" {{ '' if turn.feedback_rating else 'hidden' }}>Thanks for your feedback!</span>
+          </div>
+        </div>
+        {% endfor %}
+      </main>
+
+      <div class="suggestions" id="suggestions">
+        <button class="chip">Exam schedule</button>
+        <button class="chip">Study tips</button>
+        <button class="chip">Attendance policy</button>
+        <button class="chip">Assignment help</button>
+      </div>
+
+      <form id="chat-form" class="chat-form">
+        <input
+          id="message-input"
+          type="text"
+          autocomplete="off"
+          placeholder="Type your question here..."
+          required
+        />
+        <button type="submit">Send</button>
+      </form>
     </div>
-
-    <form id="chat-form" class="chat-form">
-      <input
-        id="message-input"
-        type="text"
-        autocomplete="off"
-        placeholder="Type your question here..."
-        required
-      />
-      <button type="submit">Send</button>
-    </form>
   </div>
 
+  <div class="toast" id="toast" hidden></div>
+
+  <script>
+    window.__INITIAL_STATE__ = {
+      conversationId: {{ current_conversation_id|tojson }}
+    };
+  </script>
   <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>
