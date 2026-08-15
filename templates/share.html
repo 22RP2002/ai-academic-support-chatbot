@@ -3,17 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{{ title }} · Shared Conversation</title>
+  <title>{{ title }} · Shared Study Session</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 </head>
 <body class="share-page">
   <div class="app share-app">
     <header class="app-header">
       <div class="brand">
-        <span class="brand-icon">🎓</span>
+        <span class="brand-icon">📚</span>
         <div>
           <h1>{{ title }}</h1>
-          <p>Shared conversation · read-only</p>
+          <p>Shared study session · read-only</p>
         </div>
       </div>
     </header>
@@ -30,7 +31,7 @@
     </main>
 
     <footer class="share-footer">
-      <p>Shared from AI Academic Support Chatbot</p>
+      <p>Shared from Study Workspace</p>
     </footer>
   </div>
 </body>

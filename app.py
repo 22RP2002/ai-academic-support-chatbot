@@ -1,7 +1,9 @@
-"""AI Academic Support Chatbot — Flask application.
+"""Study Workspace — Flask application.
 
-Serves the chat UI and a small JSON API backed by a Scikit-learn /
-NLTK intent-classification chatbot engine (see chatbot/engine.py).
+Serves the study-workspace chat UI and a small JSON API backed by a
+Scikit-learn / NLTK intent-classification chatbot engine (see
+chatbot/engine.py). Academic-admin topics (exams, attendance, etc.) remain
+answerable as a secondary capability; they are not the product's identity.
 """
 import os
 import re
@@ -28,7 +30,6 @@ from chatbot.storage import (
     get_share_messages,
     get_user_by_email,
     get_user_by_id,
-    get_user_by_username,
     init_db,
     list_conversations,
     log_feedback,
@@ -38,7 +39,8 @@ from chatbot.storage import (
 )
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,30}$")
+NAME_MIN_LEN = 2
+NAME_MAX_LEN = 100
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
@@ -46,6 +48,13 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 # the cookie needs to outlive a single browser session (default Flask
 # behaviour expires it when the browser closes).
 app.permanent_session_lifetime = timedelta(days=365)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,  # JS can never read the session cookie
+    SESSION_COOKIE_SAMESITE="Lax",  # sent on top-level navigation, blocked cross-site
+    # Only require HTTPS for the cookie once actually deployed — enforcing
+    # it locally would silently break login over plain http://127.0.0.1.
+    SESSION_COOKIE_SECURE=os.environ.get("FLASK_ENV") == "production",
+)
 
 init_db()
 engine = ChatEngine()
@@ -88,14 +97,14 @@ def signup_page():
     if request.method == "GET":
         return render_template("signup.html")
 
-    username = (request.form.get("username") or "").strip().lower()
+    name = (request.form.get("name") or "").strip()
     email = (request.form.get("email") or "").strip().lower()
     password = request.form.get("password") or ""
     confirm_password = request.form.get("confirm_password") or ""
-    form_values = {"username": username, "email": email}
+    form_values = {"name": name, "email": email}
 
-    if not USERNAME_RE.match(username):
-        flash("Username must be 3-30 characters: letters, numbers, or underscore.", "error")
+    if not (NAME_MIN_LEN <= len(name) <= NAME_MAX_LEN):
+        flash(f"Full name must be {NAME_MIN_LEN}-{NAME_MAX_LEN} characters.", "error")
         return render_template("signup.html", **form_values), 400
     if not EMAIL_RE.match(email):
         flash("Enter a valid email address.", "error")
@@ -106,22 +115,19 @@ def signup_page():
     if password != confirm_password:
         flash("Passwords do not match.", "error")
         return render_template("signup.html", **form_values), 400
-    if get_user_by_username(username):
-        flash("That username is already taken.", "error")
-        return render_template("signup.html", **form_values), 400
     if get_user_by_email(email):
         flash("An account with that email already exists.", "error")
         return render_template("signup.html", **form_values), 400
 
     try:
-        user = create_user(username, email, password)
+        user = create_user(name, email, password)
     except DuplicateUserError:
-        flash("That username or email is already in use.", "error")
+        flash("An account with that email already exists.", "error")
         return render_template("signup.html", **form_values), 400
 
     session.clear()
     session["user_id"] = user["id"]
-    flash(f"Welcome, {user['username']}! Your account was created.", "success")
+    flash(f"Welcome, {user['name']}! Your account was created.", "success")
     return redirect(url_for("index"))
 
 
@@ -144,7 +150,7 @@ def login_page():
 
     session.clear()
     session["user_id"] = user["id"]
-    flash(f"Welcome back, {user['username']}!", "success")
+    flash(f"Welcome back, {user['name']}!", "success")
     return redirect(next_url if next_url.startswith("/") else url_for("index"))
 
 

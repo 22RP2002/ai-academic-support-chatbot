@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Academic Support Chatbot</title>
+  <title>Study Workspace</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 </head>
 <body>
@@ -12,6 +13,8 @@
 
     <aside class="sidebar" id="sidebar">
       <button id="new-chat-btn" class="new-chat-btn">+ New chat</button>
+
+      <div class="sidebar-section-label">Chats</div>
       <div class="conversation-list" id="conversation-list">
         {% if conversations %}
           {% for conv in conversations %}
@@ -23,29 +26,35 @@
           </div>
           {% endfor %}
         {% else %}
-          <div class="empty-history" id="empty-history">No conversations yet — start chatting!</div>
+          <div class="empty-history" id="empty-history">No chats yet — start studying!</div>
         {% endif %}
       </div>
+
+      <div class="sidebar-section-label">Study materials</div>
+      <button type="button" id="study-materials-btn" class="sidebar-placeholder-item">
+        <span>📎 Upload notes &amp; PDFs</span>
+        <span class="soon-badge">Soon</span>
+      </button>
     </aside>
 
     <div class="app">
       <header class="app-header">
         <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Toggle conversation list">☰</button>
         <div class="brand">
-          <span class="brand-icon">🎓</span>
+          <span class="brand-icon">📚</span>
           <div>
-            <h1>Academic Support Chatbot</h1>
-            <p>Ask about courses, exams, assignments, attendance, or study tips</p>
+            <h1>Study Workspace</h1>
+            <p>Ask questions, get explanations, and study smarter — powered by AI</p>
           </div>
         </div>
         <div class="header-actions">
           <button id="share-btn" class="header-btn" title="Share this conversation">Share</button>
           <div class="profile-menu">
             <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile menu">
-              {{ current_user.username[0]|upper }}
+              {{ current_user.name[0]|upper }}
             </button>
             <div class="profile-dropdown" id="profile-dropdown" hidden>
-              <div class="profile-name">{{ current_user.username }}</div>
+              <div class="profile-name">{{ current_user.name }}</div>
               <a class="profile-item" href="{{ url_for('profile_page') }}">Profile</a>
               <a class="profile-item" href="{{ url_for('profile_page') }}">Settings</a>
               <form method="post" action="{{ url_for('logout_page') }}">
@@ -58,12 +67,16 @@
 
       <main class="chat-window" id="chat-window">
         {% if not history %}
-        <div class="message bot">
-          <div class="bubble">
-            Hi{{ ' ' + student_name if student_name else '' }}! I'm your academic support
-            assistant. Try asking me about exam schedules, assignment deadlines,
-            attendance policy, or study tips.
-          </div>
+        <div class="empty-state" id="empty-state">
+          <div class="empty-state-icon">📚</div>
+          <h2>How can I help you study today{{ ', ' + student_name if student_name else '' }}?</h2>
+          <p>Ask a question, work through a tricky topic, or get a quick explanation.</p>
+          <ul class="empty-state-features">
+            <li><span class="feature-icon">💬</span> Ask questions on any topic</li>
+            <li><span class="feature-icon">📝</span> Get clear explanations and summaries</li>
+            <li><span class="feature-icon">🎯</span> Practice and revise what you've learned</li>
+            <li><span class="feature-icon">📎</span> Upload your notes <span class="soon-badge">Soon</span></li>
+          </ul>
         </div>
         {% endif %}
         {% for turn in history %}
@@ -83,18 +96,19 @@
       </main>
 
       <div class="suggestions" id="suggestions">
-        <button class="chip">Exam schedule</button>
-        <button class="chip">Study tips</button>
-        <button class="chip">Attendance policy</button>
-        <button class="chip">Assignment help</button>
+        <button type="button" class="chip" data-prompt="Explain this topic in simple terms: ">Explain a topic</button>
+        <button type="button" class="chip" data-prompt="Summarize this topic for me: ">Summarize a topic</button>
+        <button type="button" class="chip" data-prompt="Give me revision notes on: ">Revision notes</button>
+        <button type="button" class="chip" data-prompt="Give me some study tips for ">Study tips</button>
       </div>
 
       <form id="chat-form" class="chat-form">
+        <button type="button" id="attach-file-btn" class="attach-btn" title="Attach a file (coming soon)" aria-label="Attach a file (coming soon)">📎</button>
         <input
           id="message-input"
           type="text"
           autocomplete="off"
-          placeholder="Type your question here..."
+          placeholder="Ask a question or describe what you want to study..."
           required
         />
         <button type="submit">Send</button>

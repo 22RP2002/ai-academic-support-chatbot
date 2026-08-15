@@ -7,9 +7,9 @@
         "Hi there", "Hey bot", "Is anyone there?", "Yo", "Hiya", "What's up", "Sup"
       ],
       "responses": [
-        "Hello{name}! I'm your academic support assistant. How can I help you today?",
-        "Hi{name}! Ready to help with your studies. What do you need?",
-        "Hey{name}! Ask me about your courses, exams, assignments, or study tips."
+        "Hello{name}! I'm here to help you study. What are you working on today?",
+        "Hi{name}! Ready to dig into a topic, or looking for study tips?",
+        "Hey{name}! Ask me a question, or tell me what you're trying to learn."
       ]
     },
     {
@@ -43,8 +43,8 @@
         "Are you a bot", "Are you human", "What is this"
       ],
       "responses": [
-        "I'm an AI Academic Support Chatbot built with Flask, NLTK, and Scikit-learn. I help students with course info, exams, assignments, and study guidance.",
-        "I'm your virtual academic assistant, designed to answer common student queries instantly."
+        "I'm your AI study assistant — here to help you understand topics, revise, and stay motivated while you study.",
+        "I'm a study workspace assistant, built to answer questions and support you through your learning, not just exam season."
       ]
     },
     {
@@ -54,8 +54,8 @@
         "What can you help with", "List your features", "What kind of questions can I ask"
       ],
       "responses": [
-        "I can help with: course & syllabus info, exam schedules, assignment deadlines, attendance policy, grading, library info, study tips, time management, stress management, scholarships, fees, hostel info, placements, and faculty contacts.",
-        "Ask me about exams, assignments, attendance, grades, study tips, or campus facilities and I'll do my best to help{name}!"
+        "Right now I can help with study tips, time management, staying motivated, and handling exam stress — plus general academic questions like exams, assignments, or attendance. Soon you'll be able to upload your own notes and PDFs so I can help you study from your own material.",
+        "Ask me for study tips, help managing your time, or a motivation boost — I'll do my best to help{name}! Uploading your own study material is coming soon."
       ]
     },
     {
@@ -324,9 +324,9 @@
       "tag": "noanswer",
       "patterns": [],
       "responses": [
-        "I'm not sure I understand{name}. Could you rephrase that, or ask about courses, exams, assignments, attendance, or study tips?",
-        "Sorry{name}, I don't have an answer for that yet. Try asking about exams, assignments, timetable, or study tips.",
-        "Hmm, I couldn't quite get that. You can ask me about academics, exams, library, or student life."
+        "I'm not sure I understand{name}. Could you rephrase that, or try asking for study tips, time management help, or a motivation boost?",
+        "Sorry{name}, I don't have an answer for that yet. I can currently help most with study tips, exams, and assignments — try rephrasing your question.",
+        "Hmm, I couldn't quite get that. Uploading your own notes for me to study from is coming soon — for now, try asking about study techniques or academic topics."
       ]
     }
   ]

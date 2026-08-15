@@ -45,14 +45,50 @@ def get_connection():
 
 def init_db():
     with get_connection() as conn:
+        # Non-destructive migration: the users table originally used a
+        # unique `username`. Full-name signup replaces that with a
+        # non-unique `name` field, and adds `updated_at`. SQLite can't drop
+        # a UNIQUE constraint in place, so rebuild the table and copy every
+        # existing account across (old username becomes its display name;
+        # id/email/password_hash/created_at are preserved exactly, so
+        # existing accounts keep working with the same credentials).
+        existing_tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "users" in existing_tables:
+            user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+            if "name" not in user_columns and "username" in user_columns:
+                conn.execute(
+                    """
+                    CREATE TABLE users_new (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        email TEXT NOT NULL UNIQUE,
+                        password_hash TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO users_new (id, name, email, password_hash, created_at, updated_at)
+                    SELECT id, username, email, password_hash, created_at, created_at
+                    FROM users
+                    """
+                )
+                conn.execute("DROP TABLE users")
+                conn.execute("ALTER TABLE users_new RENAME TO users")
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
-                username TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """
         )
@@ -210,11 +246,11 @@ def log_feedback(chat_log_id, session_id, message, response, intent, rating):
         return cursor.rowcount > 0
 
 
-def create_user(username, email, password):
+def create_user(name, email, password):
     """Create a new account with a securely hashed password.
 
-    Raises DuplicateUserError if the username or email is already taken
-    (also guards the race between the pre-check in app.py and this insert).
+    Raises DuplicateUserError if the email is already registered (also
+    guards the race between the pre-check in app.py and this insert).
     """
     user_id = uuid.uuid4().hex
     now = datetime.utcnow().isoformat()
@@ -223,15 +259,15 @@ def create_user(username, email, password):
         try:
             conn.execute(
                 """
-                INSERT INTO users (id, username, email, password_hash, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (id, name, email, password_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, username, email, password_hash, now),
+                (user_id, name, email, password_hash, now, now),
             )
             conn.commit()
         except sqlite3.IntegrityError as exc:
-            raise DuplicateUserError("username or email already in use") from exc
-    return {"id": user_id, "username": username, "email": email, "created_at": now}
+            raise DuplicateUserError("email already in use") from exc
+    return {"id": user_id, "name": name, "email": email, "created_at": now, "updated_at": now}
 
 
 def get_user_by_email(email):
@@ -239,18 +275,8 @@ def get_user_by_email(email):
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT id, username, email, password_hash, created_at FROM users WHERE email = ?",
+            "SELECT id, name, email, password_hash, created_at, updated_at FROM users WHERE email = ?",
             (email,),
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def get_user_by_username(username):
-    with get_connection() as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT id, username, email, created_at FROM users WHERE username = ?",
-            (username,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -260,7 +286,7 @@ def get_user_by_id(user_id):
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT id, username, email, created_at FROM users WHERE id = ?",
+            "SELECT id, name, email, created_at, updated_at FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
         return dict(row) if row else None

@@ -3,13 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Profile · AI Academic Support Chatbot</title>
+  <title>Profile · Study Workspace</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 </head>
 <body class="auth-page">
   <div class="auth-card">
     <div class="brand auth-brand">
-      <span class="brand-icon">🎓</span>
+      <span class="brand-icon">📚</span>
       <div>
         <h1>Profile &amp; settings</h1>
         <p>Your account details</p>
@@ -27,8 +28,8 @@
     {% endwith %}
 
     <dl class="profile-fields">
-      <dt>Username</dt>
-      <dd>{{ user.username }}</dd>
+      <dt>Full name</dt>
+      <dd>{{ user.name }}</dd>
       <dt>Email</dt>
       <dd>{{ user.email }}</dd>
       <dt>Member since</dt>

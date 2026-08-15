@@ -3,16 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sign up · AI Academic Support Chatbot</title>
+  <title>Sign up · Study Workspace</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 </head>
 <body class="auth-page">
   <div class="auth-card">
     <div class="brand auth-brand">
-      <span class="brand-icon">🎓</span>
+      <span class="brand-icon">📚</span>
       <div>
-        <h1>Academic Support Chatbot</h1>
-        <p>Create an account to save your conversations</p>
+        <h1>Study Workspace</h1>
+        <p>Create your account and start studying smarter</p>
       </div>
     </div>
 
@@ -27,9 +28,9 @@
     {% endwith %}
 
     <form method="post" action="{{ url_for('signup_page') }}" class="auth-form">
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" autocomplete="username" required
-             minlength="3" maxlength="30" value="{{ username or '' }}" />
+      <label for="name">Full name</label>
+      <input id="name" name="name" type="text" autocomplete="name" required
+             minlength="2" maxlength="100" value="{{ name or '' }}" />
 
       <label for="email">Email</label>
       <input id="email" name="email" type="email" autocomplete="email" required value="{{ email or '' }}" />

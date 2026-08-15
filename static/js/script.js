@@ -12,6 +12,8 @@ const shareBtn = document.getElementById("share-btn");
 const profileBtn = document.getElementById("profile-btn");
 const profileDropdown = document.getElementById("profile-dropdown");
 const toast = document.getElementById("toast");
+const attachFileBtn = document.getElementById("attach-file-btn");
+const studyMaterialsBtn = document.getElementById("study-materials-btn");
 
 let currentConversationId =
   (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.conversationId) || null;
@@ -103,11 +105,25 @@ function renderTurn(turn) {
   );
 }
 
-function showWelcome() {
-  appendMessage(
-    "Hi! I'm your academic support assistant. Try asking me about exam schedules, assignment deadlines, attendance policy, or study tips.",
-    "bot"
-  );
+// Mirrors the server-rendered empty state in templates/index.html so
+// "New Chat" and deleting the active conversation look identical to a
+// fresh page load.
+function renderEmptyState() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "empty-state";
+  wrapper.id = "empty-state";
+  wrapper.innerHTML = `
+    <div class="empty-state-icon">📚</div>
+    <h2>How can I help you study today?</h2>
+    <p>Ask a question, work through a tricky topic, or get a quick explanation.</p>
+    <ul class="empty-state-features">
+      <li><span class="feature-icon">💬</span> Ask questions on any topic</li>
+      <li><span class="feature-icon">📝</span> Get clear explanations and summaries</li>
+      <li><span class="feature-icon">🎯</span> Practice and revise what you've learned</li>
+      <li><span class="feature-icon">📎</span> Upload your notes <span class="soon-badge">Soon</span></li>
+    </ul>
+  `;
+  chatWindow.appendChild(wrapper);
 }
 
 async function submitFeedback(container, rating) {
@@ -204,10 +220,24 @@ chatForm.addEventListener("submit", (e) => {
   sendMessage(text);
 });
 
+// Quick-action chips are prompt starters, not auto-sent canned queries:
+// they fill the input with an editable template and let the student
+// finish and send it themselves. This avoids implying the chatbot can
+// already summarize/quiz from material it doesn't have (no upload yet).
 suggestions.addEventListener("click", (e) => {
-  if (e.target.classList.contains("chip")) {
-    sendMessage(e.target.textContent);
-  }
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  messageInput.value = chip.dataset.prompt || "";
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+});
+
+attachFileBtn.addEventListener("click", () => {
+  showToast("File upload is coming soon — you'll be able to add your own notes and PDFs here.");
+});
+
+studyMaterialsBtn.addEventListener("click", () => {
+  showToast("Study materials are coming soon.");
 });
 
 // --- Sidebar: conversation list ------------------------------------------
@@ -304,7 +334,7 @@ async function deleteConversationHandler(conversationId) {
     if (conversationId === currentConversationId) {
       currentConversationId = null;
       chatWindow.innerHTML = "";
-      showWelcome();
+      renderEmptyState();
     }
 
     loadConversations();
@@ -335,7 +365,7 @@ newChatBtn.addEventListener("click", async () => {
   }
   currentConversationId = null;
   chatWindow.innerHTML = "";
-  showWelcome();
+  renderEmptyState();
   highlightActiveConversation();
   closeSidebarDrawer();
 });
