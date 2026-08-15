@@ -1,5 +1,4 @@
-DB_PATH = os.path.join(BASE_DIR, "chat_history.db")"""SQLite-backed chat history storage.
-
+"""SQLite-backed chat history storage.
 Keeps a record of every exchange so the app can show conversation
 history / a simple "personalised support" trail, plus real user accounts.
 
