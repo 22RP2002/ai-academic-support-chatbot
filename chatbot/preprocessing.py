@@ -19,12 +19,22 @@ _REQUIRED_NLTK_DATA = {
 
 
 def ensure_nltk_data():
-    """Download required NLTK corpora on first run, if missing."""
+    """Download required NLTK data to a writable directory."""
+    nltk_data_dir = "/tmp/nltk_data"
+    os.makedirs(nltk_data_dir, exist_ok=True)
+
+    if nltk_data_dir not in nltk.data.path:
+        nltk.data.path.insert(0, nltk_data_dir)
+
     for path, package in _REQUIRED_NLTK_DATA.items():
         try:
             nltk.data.find(path)
         except LookupError:
-            nltk.download(package, quiet=True)
+            nltk.download(
+                package,
+                download_dir=nltk_data_dir,
+                quiet=True
+            )
 
 
 _lemmatizer = WordNetLemmatizer()
