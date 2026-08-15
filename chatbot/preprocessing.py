@@ -6,6 +6,7 @@ model sees text in a consistent form.
 """
 import re
 import string
+import os
 
 import nltk
 from nltk.stem import WordNetLemmatizer
