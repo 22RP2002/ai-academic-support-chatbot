@@ -70,10 +70,17 @@ def ensure_session():
 
 
 def login_required_page(view):
-    """For HTML routes: redirect anonymous visitors to the login page."""
+    """For HTML routes: redirect anonymous (or stale-session) visitors to login.
+
+    A session can carry a user_id whose account no longer exists (e.g. the
+    DB was reset/cleared while the browser kept its cookie) — treat that the
+    same as not being logged in, rather than passing a None user through to
+    templates that assume a real, logged-in current_user.
+    """
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not session.get("user_id"):
+        if not session.get("user_id") or get_user_by_id(session["user_id"]) is None:
+            session.clear()
             return redirect(url_for("login_page", next=request.path))
         return view(*args, **kwargs)
     return wrapped
@@ -83,7 +90,8 @@ def login_required_api(view):
     """For JSON API routes: a redirect is useless to fetch(), so return 401."""
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not session.get("user_id"):
+        if not session.get("user_id") or get_user_by_id(session["user_id"]) is None:
+            session.clear()
             return jsonify({"error": "authentication required"}), 401
         return view(*args, **kwargs)
     return wrapped

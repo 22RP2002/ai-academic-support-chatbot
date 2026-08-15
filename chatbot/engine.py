@@ -19,7 +19,17 @@ from chatbot.preprocessing import clean_text, ensure_nltk_data
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INTENTS_PATH = os.path.join(BASE_DIR, "data", "intents.json")
-MODEL_PATH = os.path.join(BASE_DIR, "model", "chatbot_model.pkl")
+
+# data/intents.json is always deployed (it's source, not gitignored), so
+# INTENTS_PATH is fine as-is on Vercel's read-only filesystem. The trained
+# model artifact is gitignored and regenerated locally, so it's normally
+# absent from the deployment bundle — cache it under /tmp there instead of
+# the read-only source tree. Training takes ~1-2s, so retraining on cold
+# start (rather than ever finding a cached file) is an acceptable cost.
+if os.environ.get("VERCEL"):
+    MODEL_PATH = "/tmp/chatbot_model.pkl"
+else:
+    MODEL_PATH = os.path.join(BASE_DIR, "model", "chatbot_model.pkl")
 
 CONFIDENCE_THRESHOLD = 0.35
 
@@ -51,8 +61,13 @@ def train_model(save: bool = True) -> Pipeline:
     pipeline.fit(X, y)
 
     if save:
-        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-        joblib.dump(pipeline, MODEL_PATH)
+        try:
+            os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+            joblib.dump(pipeline, MODEL_PATH)
+        except OSError:
+            # Read-only filesystem (or similar) — the trained pipeline is
+            # still returned and usable in-memory, just not cached to disk.
+            pass
 
     return pipeline
 
