@@ -1,4 +1,4 @@
-"""SQLite-backed chat history storage.
+DB_PATH = os.path.join(BASE_DIR, "chat_history.db")"""SQLite-backed chat history storage.
 
 Keeps a record of every exchange so the app can show conversation
 history / a simple "personalised support" trail, plus real user accounts.
@@ -25,8 +25,7 @@ from datetime import datetime
 from werkzeug.security import generate_password_hash
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "chat_history.db")
-
+DB_PATH = "/tmp/chat_history.db"
 TITLE_MAX_LEN = 40
 
 
